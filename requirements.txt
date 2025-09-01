@@ -1,0 +1,4 @@
+# talk2earth / requirements.txt  — main Streamlit app (LLM + UI)
+streamlit==1.49.0
+openai==1.102.0
+openai-agents==0.2.10
