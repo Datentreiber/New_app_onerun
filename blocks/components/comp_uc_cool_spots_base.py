@@ -14,8 +14,6 @@ def app():
     st.info("Hinweis: AOI/Zeitraum/Parameter sind jederzeit änderbar. "
             "Diese Basis-Komponente erzeugt LST (°C) als Sommer-Median.")
 
-    # Platzhalter: hier würde EE + Geemap-Karte erzeugt werden.
-    # Für lauffähigen Minimalcode zeigen wir nur Parameter an:
     st.subheader("Debug/Preview (Placeholder)")
     st.json({
         "aoi": aoi_text,
