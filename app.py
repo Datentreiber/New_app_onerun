@@ -7,6 +7,7 @@ import subprocess
 from typing import Optional, List
 
 import streamlit as st
+import asyncio  # <— NEU: für Event-Loop-Fix
 
 BASE_DIR = pathlib.Path(__file__).parent.resolve()
 
@@ -193,6 +194,18 @@ def tool_run_python(code: str,
 
     return json.dumps({"error": f"unknown mode '{mode}'"})
 
+# ===== Async-Loop-Sicherung (Fix für Runner.run_sync in Streamlit-Thread) =====
+def ensure_event_loop() -> None:
+    """
+    Stellt sicher, dass im aktuellen Thread ein asyncio-Event-Loop vorhanden ist.
+    Notwendig, weil Streamlit Code in einem ScriptRunner-Thread ohne Default-Loop ausführt.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
 # ===== Agent Setup ============================================================
 if AGENTS_OK:
     openai_client = AsyncOpenAI()  # liest OPENAI_API_KEY
@@ -253,12 +266,13 @@ if prompt:
         iteration_context = ""
         if st.session_state.last_code:
             iteration_context = f"\n\n[EXISTING_CODE_BEGIN]\n{st.session_state.last_code}\n[EXISTING_CODE_END]\n"
-        # Optional: letzen Turn kurz mitgeben (leichtes Memory ohne echte Sessions)
-        # Der Agents Runner kann Sessions handhaben; hier minimalistisch:
         history_note = ""
-        if st.session_state.messages[:-1]:  # alles bis inkl. voriger Assistant
-            # nur kurzer Hinweis – die echte Steuerung macht der Prompt
+        if st.session_state.messages[:-1]:
             history_note = "\n\n[HISTORY NOTE] Continue this session; respond naturally and follow iteration rules.\n"
+
+        # >>>> FIX: Sicherstellen, dass ein Event-Loop existiert (Streamlit-Thread)
+        ensure_event_loop()
+
         result = Runner.run_sync(agent, input=(prompt + history_note + iteration_context))
         answer = result.final_output or ""
 
