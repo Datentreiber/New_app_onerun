@@ -1,0 +1,9 @@
+id: domain_thermal
+scope: "Thermales Mikroklima, Urban Cooling, Landsat LST (Sommer, Median)"
+intent_patterns:
+  - name: percentile_mask
+    cue_examples: ["kühlsten x %", "cool spots", "coldest areas"]
+assumptions:
+  - LST in °C; Sommer: Jun–Aug (änderbar)
+interaction_contract:
+  - "AOI/Zeitraum/Parameter werden in der App als Widgets bereitgestellt."
