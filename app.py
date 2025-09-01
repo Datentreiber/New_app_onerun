@@ -1,4 +1,4 @@
-# app.py — Talk2Earth (Agents SDK + Streamlit) — FIXED IMPORT + STREAMLIT RUNNER MODE
+# app.py — talk2earth (Agents SDK + Streamlit) — Chat-UI, Function Tools, Streamlit-Runner
 import os
 import re
 import json
@@ -10,8 +10,7 @@ import streamlit as st
 
 BASE_DIR = pathlib.Path(__file__).parent.resolve()
 
-# ===== Agents SDK (korrekt) ===================================================
-# pip install openai-agents openai
+# ===== Agents SDK korrekt importieren =========================================
 AGENTS_OK = True
 try:
     from agents import Agent, Runner, function_tool
@@ -21,7 +20,7 @@ except Exception as e:
     AGENTS_OK = False
     AGENTS_IMPORT_ERROR = str(e)
 
-# ===== Prompts laden (du lieferst die Dateien separat; hier Fallbacks) ========
+# ===== Prompts laden (Fallbacks, falls Dateien fehlen) ========================
 def load_text_file(path: pathlib.Path, fallback: str = "") -> str:
     try:
         return path.read_text(encoding="utf-8")
@@ -31,7 +30,10 @@ def load_text_file(path: pathlib.Path, fallback: str = "") -> str:
 PROMPTS_DIR = BASE_DIR / "knowledge" / "prompts"
 MASTER_PROMPT = load_text_file(
     PROMPTS_DIR / "layer1_master.md",
-    fallback="You are an EO analyst agent. Always output full Streamlit apps with interactive AOI/time/params widgets."
+    fallback=(
+        "You are an EO analyst agent. Always output full Streamlit apps with interactive AOI/time/params widgets. "
+        "Ask at most one semantic question only if a fixed, non-interactive output would otherwise be wrong."
+    )
 )
 GATES_PROMPT = load_text_file(
     PROMPTS_DIR / "gates.md",
@@ -42,7 +44,7 @@ ITERATION_PROMPT = load_text_file(
     fallback="When existing code is present, treat it as source of truth; apply only requested minimal changes; output full updated Streamlit code."
 )
 
-# ===== FS Layout ==============================================================
+# ===== FS-Pfade ===============================================================
 KNOWLEDGE_DIR = BASE_DIR / "knowledge"
 USECASES_DIR = KNOWLEDGE_DIR / "usecases"
 DOMAINS_DIR = KNOWLEDGE_DIR / "domains"
@@ -61,13 +63,13 @@ def _ls_ids(folder: pathlib.Path, suffix: str) -> List[str]:
         return []
     return [p.stem for p in sorted(folder.glob(f"*{suffix}"))]
 
-# ===== Tools (Function Tools) =================================================
+# ===== Function Tools (Agents SDK) ============================================
 @function_tool
 def tool_list_packs(kind: str, domain: Optional[str] = None) -> str:
     """
-    Listet verfügbare Pack-IDs.
+    List available pack IDs.
     kind: "usecases" | "domains" | "negatives"
-    domain: optionaler Filter (nur usecases)
+    domain: optional filter (usecases only)
     """
     res = {"ids": []}
     if kind == "usecases":
@@ -92,7 +94,7 @@ def tool_list_packs(kind: str, domain: Optional[str] = None) -> str:
 
 @function_tool
 def tool_get_pack(pack_id: str) -> str:
-    """Gibt den YAML-Inhalt eines Packs zurück."""
+    """Return YAML content of a pack (usecases/domains/negatives)."""
     for folder in (USECASES_DIR, DOMAINS_DIR, NEGATIVES_DIR):
         f = folder / f"{pack_id}.yml"
         if f.exists():
@@ -101,7 +103,7 @@ def tool_get_pack(pack_id: str) -> str:
 
 @function_tool
 def tool_get_component(component_id: str) -> str:
-    """Gibt den Python-Text (.py.txt) einer Komponente zurück."""
+    """Return Python text (.py.txt) of a component."""
     f = COMPONENTS_DIR / f"{component_id}.py.txt"
     if f.exists():
         return f.read_text(encoding="utf-8")
@@ -109,7 +111,7 @@ def tool_get_component(component_id: str) -> str:
 
 @function_tool
 def tool_get_util(util_id: str) -> str:
-    """Gibt den Python-Text (.py.txt) eines Utils zurück."""
+    """Return Python text (.py.txt) of a util helper."""
     f = UTILS_DIR / f"{util_id}.py.txt"
     if f.exists():
         return f.read_text(encoding="utf-8")
@@ -122,10 +124,10 @@ def tool_run_python(code: str,
                     mode: str = "script",
                     port: int = 8502) -> str:
     """
-    Führt Code in der Sandbox aus.
-    - mode="script":  python file.py (stdout/stderr zurück)
-    - mode="streamlit": streamlit run file.py --server.headless true --server.port {port}
-                        → gibt url & pid zurück (Logs gekürzt)
+    Execute code inside runner/sandbox.
+    - mode="script": python file.py (returns stdout/stderr)
+    - mode="streamlit": streamlit run file.py --server.headless --server.port {port}
+                        (returns url + pid + short bootstrap log)
     """
     if not filename:
         filename = "app_run.py"
@@ -157,8 +159,7 @@ def tool_run_python(code: str,
                 "mode": "script"
             }, ensure_ascii=False)
 
-    elif mode == "streamlit":
-        # Startet Streamlit headless auf festem Port; gibt URL & PID zurück
+    if mode == "streamlit":
         try:
             proc = subprocess.Popen(
                 ["streamlit", "run", str(target), "--server.headless", "true", "--server.port", str(port)],
@@ -167,20 +168,20 @@ def tool_run_python(code: str,
                 stderr=subprocess.PIPE,
                 text=True
             )
-            # kleine Wartezeit, um erste Logs zu sammeln
+            # kleine Wartezeit: eine Zeile lesen (nicht blockieren)
             try:
-                stdout = proc.stdout.readline().strip() if proc.stdout else ""
+                bootstrap = proc.stdout.readline().strip() if proc.stdout else ""
             except Exception:
-                stdout = ""
+                bootstrap = ""
             url = f"http://localhost:{port}"
             return json.dumps({
                 "ok": True,
                 "url": url,
                 "pid": proc.pid,
                 "path": str(target),
-                "hint": "Öffne die URL im Browser. Beende den Prozess manuell bei Bedarf.",
+                "hint": "Öffne die URL im Browser. Beende den Prozess bei Bedarf manuell.",
                 "mode": "streamlit",
-                "bootstrap_log": stdout[-2000:]
+                "bootstrap_log": bootstrap[-2000:]
             }, ensure_ascii=False)
         except Exception as e:
             return json.dumps({
@@ -190,12 +191,11 @@ def tool_run_python(code: str,
                 "mode": "streamlit"
             }, ensure_ascii=False)
 
-    else:
-        return json.dumps({"error": f"unknown mode '{mode}'"})
+    return json.dumps({"error": f"unknown mode '{mode}'"})
 
 # ===== Agent Setup ============================================================
 if AGENTS_OK:
-    openai_client = AsyncOpenAI()  # liest OPENAI_API_KEY aus Env/Secrets
+    openai_client = AsyncOpenAI()  # liest OPENAI_API_KEY
     agent = Agent(
         name="EO-Agent",
         instructions="\n\n".join([MASTER_PROMPT, GATES_PROMPT, ITERATION_PROMPT]),
@@ -203,8 +203,8 @@ if AGENTS_OK:
         model=OpenAIResponsesModel(model=os.environ.get("OPENAI_MODEL", "gpt-4o"), openai_client=openai_client),
     )
 
-# ===== Streamlit UI ===========================================================
-st.set_page_config(page_title="talk2earth (Agents SDK)", layout="wide")
+# ===== Streamlit: echtes Chat-Interface ======================================
+st.set_page_config(page_title="talk2earth — EO Agent", layout="wide")
 st.title("talk2earth — EO Agent (Agents SDK + Streamlit)")
 
 with st.sidebar:
@@ -212,62 +212,77 @@ with st.sidebar:
     st.write("Agents SDK:", "✅ bereit" if AGENTS_OK else f"❌ {AGENTS_IMPORT_ERROR}")
     st.write("OPENAI_API_KEY gesetzt:", "✅" if os.environ.get("OPENAI_API_KEY") else "❌")
     st.divider()
-    st.subheader("Knowledge Packs")
+    st.subheader("Knowledge Packs (debug)")
     try:
-        uc_ids = json.loads(tool_list_packs("usecases"))
-        st.write("Use-Cases:", ", ".join(uc_ids.get("ids", [])))
-        dom_ids = json.loads(tool_list_packs("domains"))
-        st.write("Domains:", ", ".join(dom_ids.get("ids", [])))
+        ucs = json.loads(tool_list_packs("usecases"))
+        st.caption("Use-Cases: " + ", ".join(ucs.get("ids", [])))
+        doms = json.loads(tool_list_packs("domains"))
+        st.caption("Domains: " + ", ".join(doms.get("ids", [])))
     except Exception as e:
         st.warning(f"Packs-Auflistung fehlgeschlagen: {e}")
-    st.caption("AOI/Zeitraum/Parameter werden in den generierten Apps interaktiv bereitgestellt.")
+    st.divider()
+    st.caption("Hinweis: AOI/Zeitraum/Parameter werden in den **generierten Apps** interaktiv bereitgestellt.")
 
-if "history" not in st.session_state:
-    st.session_state.history = []
+# Chat-Speicher
+if "messages" not in st.session_state:
+    st.session_state.messages = []  # [{"role":"user"/"assistant","content":str}]
 if "last_code" not in st.session_state:
     st.session_state.last_code = ""
+
+# Verlauf rendern
+for m in st.session_state.messages:
+    with st.chat_message(m["role"]):
+        st.markdown(m["content"])
 
 def extract_first_python_block(text: str) -> Optional[str]:
     m = re.search(r"```(?:python)?\s*(.+?)```", text, flags=re.DOTALL | re.IGNORECASE)
     return m.group(1).strip() if m else None
 
-user_text = st.text_area("Deine Anfrage", placeholder="z.B. 'Cool Spots Sommer 2023 in München, Top 10%'", height=130)
-c1, c2, c3 = st.columns([1,1,1])
-fire = c1.button("Generieren (Code)", type="primary")
-run_script = c2.button("Run (script)")
-run_streamlit = c3.button("Run (streamlit)")
+# Chat-Eingabe (richtiger „Senden“-Flow)
+prompt = st.chat_input("Nachricht an den Agenten eingeben und mit Enter senden…")
+if prompt:
+    # 1) User Nachricht anzeigen/speichern
+    st.session_state.messages.append({"role": "user", "content": prompt})
+    with st.chat_message("user"):
+        st.markdown(prompt)
 
-if fire and user_text.strip():
+    # 2) Agent call (mit optionaler Iterations-Injektion)
     if not AGENTS_OK:
-        st.error("Agents SDK nicht verfügbar. Bitte `openai-agents` installieren.")
+        answer = "**Fehler:** Agents SDK nicht verfügbar. Bitte `pip install openai-agents openai` und den Server neu starten."
     else:
         iteration_context = ""
         if st.session_state.last_code:
             iteration_context = f"\n\n[EXISTING_CODE_BEGIN]\n{st.session_state.last_code}\n[EXISTING_CODE_END]\n"
-        result = Runner.run_sync(agent, input=(user_text + iteration_context))
+        # Optional: letzen Turn kurz mitgeben (leichtes Memory ohne echte Sessions)
+        # Der Agents Runner kann Sessions handhaben; hier minimalistisch:
+        history_note = ""
+        if st.session_state.messages[:-1]:  # alles bis inkl. voriger Assistant
+            # nur kurzer Hinweis – die echte Steuerung macht der Prompt
+            history_note = "\n\n[HISTORY NOTE] Continue this session; respond naturally and follow iteration rules.\n"
+        result = Runner.run_sync(agent, input=(prompt + history_note + iteration_context))
         answer = result.final_output or ""
-        st.session_state.history.append(("assistant", answer))
-        code_block = extract_first_python_block(answer)
-        if code_block:
-            st.session_state.last_code = code_block
 
-st.subheader("Generierter Code")
-st.code(st.session_state.last_code or "# Noch kein Code generiert.", language="python")
+    # 3) Assistant Nachricht rendern
+    with st.chat_message("assistant"):
+        st.markdown(answer)
 
-if run_script and st.session_state.last_code:
-    with st.spinner("Runner (script)…"):
-        res = json.loads(tool_run_python(st.session_state.last_code, mode="script"))  # type: ignore
-    st.write(res)
+    st.session_state.messages.append({"role": "assistant", "content": answer})
 
-if run_streamlit and st.session_state.last_code:
-    with st.spinner("Runner (streamlit)…"):
-        res = json.loads(tool_run_python(st.session_state.last_code, filename="app_streamlit.py", mode="streamlit", port=8502))  # type: ignore
-    st.write(res)
-    if res.get("ok") and res.get("url"):
-        st.success(f"App läuft: {res['url']}  (PID: {res.get('pid')})")
-
-st.divider()
-st.subheader("Verlauf (letzte 6)")
-for role, text in st.session_state.history[-6:]:
-    if role == "assistant":
-        st.markdown(text)
+    # 4) Falls Code dabei: extrahieren und separat anzeigen + Run-Buttons einblenden
+    code_block = extract_first_python_block(answer)
+    if code_block:
+        st.session_state.last_code = code_block
+        st.write("---")
+        st.subheader("Erkannter Code aus der letzten Antwort")
+        st.code(code_block, language="python")
+        c1, c2 = st.columns(2)
+        if c1.button("Run in Runner (script)"):
+            with st.spinner("Runner (script)…"):
+                res = json.loads(tool_run_python(code_block, mode="script"))  # type: ignore
+            st.write(res)
+        if c2.button("Run in Runner (streamlit)"):
+            with st.spinner("Runner (streamlit)…"):
+                res = json.loads(tool_run_python(code_block, filename="agent_streamlit.py", mode="streamlit", port=8502))  # type: ignore
+            st.write(res)
+            if res.get("ok") and res.get("url"):
+                st.success(f"App läuft: {res['url']}  (PID: {res.get('pid')})")
