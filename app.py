@@ -10,9 +10,9 @@ import streamlit as st
 # === Agents SDK (korrekt) ===
 # Installation: pip install openai-agents openai
 # Doku: function tools + Runner.run_sync + Responses model
-from agents import Agent, Runner, function_tool  # :contentReference[oaicite:1]{index=1}
-from agents import WebSearchTool, FileSearchTool  # optional; wir registrieren sie nicht standardmäßig
-from agents.ref.models.openai_responses import OpenAIResponsesModel  # Responses Model (optional) :contentReference[oaicite:2]{index=2}
+from openai-agents import Agent, Runner, function_tool  # :contentReference[oaicite:1]{index=1}
+from openai-agents import WebSearchTool, FileSearchTool  # optional; wir registrieren sie nicht standardmäßig
+from openai-agents.ref.models.openai_responses import OpenAIResponsesModel  # Responses Model (optional) :contentReference[oaicite:2]{index=2}
 from openai import AsyncOpenAI
 
 BASE_DIR = pathlib.Path(__file__).parent.resolve()
@@ -256,3 +256,4 @@ st.subheader("Verlauf")
 for role, text in st.session_state.history[-6:]:
     if role == "assistant":
         st.markdown(text)
+
