@@ -1,0 +1,13 @@
+id: uc_s5p_no2_monthly
+domain: domain_air
+title: "Sentinel-5P NO₂ Monatsmittel + Monatsvergleich"
+base_component_id: comp_uc_air_quality_base
+allowed_components: []
+allowed_patterns:
+  - "AOI→Time(month)→S5P NO₂→Filter→Monthly mean→Map + optional Delta"
+parameter_schema:
+  aoi: {kind: "geocode|polygon|country", required: false, provided_by: "UI"}
+  month: {kind: "YYYY-MM", required: false, default: "latest_available", provided_by: "UI"}
+  compare_to: {kind: "YYYY-MM", required: false, default: null}
+defaults:
+  vis: {palette: "air_no2", min: 0, max: 0.0002, label: "NO₂"}

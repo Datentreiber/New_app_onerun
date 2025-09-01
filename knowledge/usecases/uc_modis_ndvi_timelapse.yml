@@ -1,0 +1,12 @@
+id: uc_modis_ndvi_timelapse
+domain: domain_vegetation
+title: "MODIS NDVI Timelapse (Jahreslauf/DOY)"
+base_component_id: comp_uc_timelapse_ndvi_base
+allowed_components: []
+allowed_patterns:
+  - "AOI→Time(range)→MODIS NDVI→Smoothing(optional)→GIF/MP4 Timelapse"
+parameter_schema:
+  aoi: {kind: "geocode|polygon", required: false, provided_by: "UI"}
+  time_range: {kind: "YYYY-YYYY", required: false, default: "last_5y", provided_by: "UI"}
+defaults:
+  vis: {palette: "ndvi", min: 0.1, max: 0.9, label: "NDVI"}

@@ -1,0 +1,12 @@
+id: uc_ghsl_urban_change
+domain: domain_urban
+title: "GHSL Urban Change (Jahr→Jahr)"
+base_component_id: comp_uc_urban_change_base
+allowed_components: []
+allowed_patterns:
+  - "AOI→Time(years)→GHSL→Resample→Change map"
+parameter_schema:
+  aoi: {kind: "geocode|polygon", required: false, provided_by: "UI"}
+  years: {kind: "[year1, year2]", required: false, default: [1990, 2015], provided_by: "UI"}
+defaults:
+  vis: {palette: "urban_change"}
