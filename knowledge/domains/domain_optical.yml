@@ -1,0 +1,11 @@
+id: domain_optical
+scope: "Optisches EO (Sentinel-2), RGB/FCC, Quartals-Mosaike, Wolkenmasken"
+intent_patterns:
+  - name: quarter_fcc
+    cue_examples: ["Falschfarben", "Quartal", "Infrared", "FCC"]
+interaction_contract:
+  - "AOI/Zeitraum/Parameter werden in der App als Widgets bereitgestellt."
+assumptions:
+  - Quartale: Q1=Jan–März etc.
+soft_constraints:
+  - Wolkenmaskierung via S2 QA60 oder s2cloudless
