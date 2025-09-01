@@ -1,0 +1,13 @@
+id: domain_air
+scope: "Luftqualität, troposphärisches NO₂ (Sentinel-5P/TROPOMI), Monatsmittel, Differenzen"
+intent_patterns:
+  - name: monthly_mean
+    cue_examples: ["NO₂ im Monat X", "Monatsmittel", "Luftqualität Trends"]
+  - name: delta_months
+    cue_examples: ["Vergleich März 2019 vs März 2020", "Lockdown-Effekt"]
+interaction_contract:
+  - "AOI/Zeitraum/Parameter werden in der App als Widgets bereitgestellt."
+assumptions:
+  - Einheit: µmol/m² (Dobson-Units-ähnlich je nach Produkt; Visualisierung normiert)
+soft_constraints:
+  - Städtische AOIs üblich; zu kleine Polygone → verrauscht
