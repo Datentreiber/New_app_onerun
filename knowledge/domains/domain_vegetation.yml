@@ -1,7 +1,0 @@
-id: domain_vegetation
-scope: "Vegetationsindizes (NDVI), saisonale/zeitliche Dynamik, Timelapse"
-intent_patterns:
-  - name: timelapse_ndvi
-    cue_examples: ["NDVI Timelapse", "Phänologie", "Zeitreihen"]
-interaction_contract:
-  - "AOI/Zeitraum/Parameter werden in der App als Widgets bereitgestellt."

@@ -1,7 +1,0 @@
-id: domain_urban
-scope: "Urbanisierung, Bebauungsgrad/Bev.-Dichte (GHSL o.ä.), zeitliche Veränderung"
-intent_patterns:
-  - name: change
-    cue_examples: ["Stadtwachstum", "Urban change", "difference 1990/2015"]
-interaction_contract:
-  - "AOI/Zeitraum/Parameter werden in der App als Widgets bereitgestellt."
