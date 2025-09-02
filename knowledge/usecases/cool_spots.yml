@@ -1,0 +1,44 @@
+id: cool_spots
+title: "Cool Spots — Summer LST (Landsat 8/9 L2)"
+description: >
+  Ableitung sommerlicher Oberflächentemperatur (LST) in °C aus Landsat 8/9 Collection 2 Level 2.
+  QA-Maskierung nach QA_PIXEL (Bits: 1= dilated, 2= cirrus, 3= cloud, 4= cloud shadow, 5= snow → alle = 0),
+  Temperaturableitung aus ST_B10 mit Faktor 0.00341802 und Offset 149.0 (in Kelvin), anschließende Umrechnung in °C.
+  Zeitfenster: Sommer (Juni–August) eines gewählten Jahres. AOI: Geokodierter Punkt + Radius (15 km) als bounds().
+  Visualisierung: kontinuierliche Temperaturpalette (kalt → warm) mit konstanter Opazität; Split-Map rechts belegt; Colorbar „Surface temperature (°C)“.
+
+datasets:
+  - id: "LANDSAT/LC08/C02/T1_L2"
+    band: "ST_B10"
+    qa_band: "QA_PIXEL"
+  - id: "LANDSAT/LC09/C02/T1_L2"
+    band: "ST_B10"
+    qa_band: "QA_PIXEL"
+
+invariants:
+  scaffold: "Genau einmal: Imports, Page-Config, EE-Auth (geemap.ee_initialize). Optional @st.cache_data für Auth."
+  map_ui: "geemap.foliumap.Map mit Basemap 'SATELLITE' (Esri.WorldImagery) + 'CartoDB.PositronOnlyLabels'; Text-Input 'Search for a location:'; Geocode→Marker; set_center; st.session_state['zoom_level']=12"
+  summer_window: "UI-Jahr → [YYYY-06-01, YYYY-09-01)"
+  lst_formula: "LST_K = ST_B10 * 0.00341802 + 149.0; LST_C = LST_K - 273.15"
+  qa_mask: "QA_PIXEL Bits 1..5 müssen 0 sein; updateMask anwenden"
+  aoi: "Point(lon,lat).buffer(15000).bounds()"
+  reduce: "Median über Sommerfenster"
+  visualize: "min=20, max=45, palette=['#313695','#4575b4','#74add1','#abd9e9','#e0f3f8','#ffffbf','#fee090','#fdae61','#f46d43','#d73027','#a50026'], opacity=0.6"
+  render: "Split-Map rechts belegt, Colorbar 'Surface temperature (°C)', Map.to_streamlit(height=680)"
+  naming: "Bezeichner wie in Vorlagen: TEMP_OPACITY, temp_vis, mask_landsat_l2, build_lst_image"
+
+allowed_patterns:
+  - "Scaffold → Map-Setup → Summer-Window → Acquire/QA-Mask/Transform → Reduce → Visualize → Render"
+  - "Genau ein Scaffold am Anfang; genau ein Render-Pfad (rechte Split-Map)"
+  - "Keine alternativen Paletten/Parameter; keine zusätzlichen UI-Elemente"
+
+few_shot_components:
+  - "fs_coolspots_scaffold"
+  - "fs_coolspots_map_ui"
+  - "fs_coolspots_summer_window"
+  - "fs_coolspots_landsat_lst"
+  - "fs_coolspots_visualize_render"
+
+notes: >
+  Der Composer/Planner schreibt den End-Code neu. Diese Few-Shot-Komponenten dienen als Referenz für Syntax,
+  Bezeichner, Reihenfolge, Konstanten und Render-Topologie. Keine Erfindungen, solange der Prompt das nicht explizit erlaubt.
