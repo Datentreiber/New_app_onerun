@@ -1,0 +1,44 @@
+id: s2_visual
+title: "Sentinel-2 Visualizations — Quarterly FCCs"
+description: >
+  Quartalsweise Mittel-/Median-Komposition von Sentinel-2 (COPERNICUS/S2_HARMONIZED)
+  mit robustem Wolkenfilter (CLOUDY_PIXEL_PERCENTAGE ≤ 10) und Visualisierung als
+  False-Color-Composites. Reflexion wird auf 0..1 skaliert (divide(10000)).
+  UI: Standortsuche per Geocode; Auswahl von Jahr & Quartal; Auswahl vorgegebener FCC-Bandkombinationen.
+
+datasets:
+  - id: "COPERNICUS/S2_HARMONIZED"
+    preproc:
+      cloud_filter: "CLOUDY_PIXEL_PERCENTAGE ≤ 10"
+      reflectance_scale: "divide(10000)"
+    reducer: "median"
+
+invariants:
+  scaffold: "Genau einmal: Imports, Page-Config, EE-Auth (geemap.ee_initialize, @st.cache_data)."
+  map_ui: "Map = geemap.Map(center=[52.517057, 3.400917], zoom=10, basemap='SATELLITE'); Labels-Overlay 'CartoDB.PositronOnlyLabels'; Text-Input 'Search for a location:'; Geocode→Marker→set_center(..., 12); st.session_state['zoom_level']=12."
+  quarter_window: "Quartal → Startmonate {Q1:1, Q2:4, Q3:7, Q4:10}; Intervall [start, end) (Ende = +3 Monate)."
+  mosaic: "ImageCollection filterDate(start,end) → filter(lte CLOUDY_PIXEL_PERCENTAGE,10) → map(divide(10000)) → median()."
+  visualize: "shared_vis = {min: 0, max: 0.325, gamma: 1.0}; MAP_PARAMS (genau): 
+    - 'Natural Color (Red/Green/Blue)': [B4,B3,B2]
+    - 'Vegetation': [B12,B8,B4]
+    - 'Land/Water': [B8,B11,B4]
+    - 'Color Infrared': [B8,B4,B3]"
+  render: "Split-Map: rechte Seite belegt (layer aus geemap.ee_tile_layer(image, {**shared_vis, bands: MAP_PARAMS[viz_type]})); Map.to_streamlit()."
+  naming: "Bezeichner wie in den Vorlagen: MAP_PARAMS, shared_vis, fetch_mosaic, show_s2_fccs."
+
+allowed_patterns:
+  - "Scaffold → Map-Setup → Quarter-Window → Mosaic (Acquire/Preproc/Reduce) → Visualize → Render"
+  - "Genau ein Scaffold; genau ein Render-Pfad (rechte Split-Map)."
+  - "Keine alternativen Paletten/Parameter/Bandsets außerhalb MAP_PARAMS; keine zusätzlichen UI-Elemente."
+
+few_shot_components:
+  - "fs_s2_scaffold"
+  - "fs_s2_map_ui"
+  - "fs_s2_quarter_window"
+  - "fs_s2_mosaic"
+  - "fs_s2_visualize_render"
+
+notes: >
+  Der Composer/Planner schreibt den finalen Code neu (kein String-Concat). Diese Few-Shot-Dateien dienen
+  als Referenzen für Syntax, Reihenfolge, Konstanten, Namen und Render-Topologie. 1:1-Reproduktion der
+  bestehenden App ist das Ziel (keine Erfindungen, bis explizit erlaubt).
