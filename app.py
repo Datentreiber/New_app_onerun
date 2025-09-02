@@ -1,4 +1,4 @@
-# app.py — talk2earth (Agents SDK + Streamlit) — mit Inline-Mini-App Runner
+# app.py — talk2earth (Agents SDK + Streamlit) — mit Inline-Mini-App Runner 
 # Vollständige Chat-UI mit Function-Tools, echter Agents-Session, Code-Runner (script/streamlit) + INLINE-RUNNER
 import os
 import re
@@ -315,10 +315,11 @@ with st.sidebar:
     st.divider()
     st.subheader("Knowledge Packs (debug)")
     try:
-        ucs = json.loads(tool_list_packs("usecases"))
-        st.caption("Use-Cases: " + ", ".join(ucs.get("ids", [])))
-        doms = json.loads(tool_list_packs("domains"))
-        st.caption("Domains: " + ", ".join(doms.get("ids", [])))
+        # Debug-Listing OHNE Tool-Call (FunctionTool ist nicht direkt aufrufbar)
+        ucs = {"ids": _ls_ids(USECASES_DIR, ".yml")}
+        st.caption("Use-Cases: " + ", ".join(ucs["ids"]))
+        doms = {"ids": _ls_ids(DOMAINS_DIR, ".yml")}
+        st.caption("Domains: " + ", ".join(doms["ids"]))
     except Exception as e:
         st.warning(f"Packs-Auflistung fehlgeschlagen: {e}")
     st.divider()
@@ -388,19 +389,22 @@ if prompt:
         )
         answer = result.final_output or ""
 
-    # 3) Assistant Nachricht rendern
-    with st.chat_message("assistant"):
-        st.markdown(answer)
-
-    st.session_state.messages.append({"role": "assistant", "content": answer})
-
-    # 4) Falls Code erkannt: separat anzeigen + Run-Buttons + Inline-Mini-App
+    # 3) Assistant-Antwort rendern — NUR Code, wenn vorhanden; sonst Markdown
     code_block = extract_first_python_block(answer)
     if code_block:
         st.session_state.last_code = code_block
+        with st.chat_message("assistant"):
+            st.code(code_block, language="python")
+    else:
+        with st.chat_message("assistant"):
+            st.markdown(answer)
+
+    st.session_state.messages.append({"role": "assistant", "content": answer})
+
+    # 4) Falls Code erkannt: Run-Buttons + Inline-Mini-App
+    if code_block:
         st.write("---")
         st.subheader("Erkannter Code aus der letzten Antwort")
-        st.code(code_block, language="python")
 
         c1, c2, c3 = st.columns(3)
         if c1.button("Run inline (empfohlen)"):
