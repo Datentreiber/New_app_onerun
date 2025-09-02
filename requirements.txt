@@ -2,3 +2,11 @@
 streamlit==1.49.0
 openai==1.102.0
 openai-agents==0.2.10
+earthengine-api>=0.1.401
+geemap>=0.32.0
+folium>=0.16.0
+pillow>=10.3.0
+requests>=2.32.0
+matplotlib>=3.8.0
+pandas>=2.2.0
+numpy>=1.26.0
