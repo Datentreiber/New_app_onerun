@@ -1,0 +1,39 @@
+id: ndvi_timelapse
+title: "NDVI Timelapse — MODIS/061/MOD13A2 (Median-per-DOY GIF)"
+description: >
+  Jahreszyklische NDVI-Animation basierend auf MODIS/061/MOD13A2 (Band: NDVI).
+  Vorgehen: Für jede Tageszahl im Jahr (DOY) werden über die gesamte Kollektion alle Bilder
+  mit demselben DOY zusammengeführt und per Median reduziert. Daraus entsteht eine
+  sequenzielle Bildfolge, die als GIF gerendert wird. Die Frames erhalten ein
+  Monatslabel-Overlay (z. B. 'January', 'February', ...).
+
+datasets:
+  - id: "MODIS/061/MOD13A2"
+    band: "NDVI"
+    reducer: "median-per-DOY"
+    note: "DOY-Tag kommt aus system:time_start → getRelative('day','year')."  # exact approach
+
+invariants:
+  scaffold: "Genau einmal: Imports, Page-Config (Timelapses), EE-Auth (@st.cache_data, geemap.ee_initialize)."
+  region_ui: "Auswahl zwischen Kontinent (WORLD_REGIONS, Filter wld_rgn) oder Land (COUNTRIES, Filter country_na) aus USDOS/LSIB_SIMPLE/2017."
+  doy_composite: "ref_year=2019 liefert die Menge der DOYs; Join über equals(doy), saveAll(matchesKey='doy_matches'), reducer=median."
+  vis_params: "min=0.0, max=9000.0, NDVI-Palette wie Vorlage."
+  gif_params: "region=bounds(mask_fc), dimensions=600, crs='EPSG:3857', framesPerSecond=10."
+  labeling: "label_gif_with_month: overlay pro Frame mit Monatsname; DejaVuSans.ttf (Fallback: default); Textbbox+Hintergrundkasten."
+  render: "Links: Karte (Boundary+Preview des ersten Frames). Rechts: GIF (mit Monats-Overlay). Expander: Beschreibung."
+  error_handling: "Fail beim GIF-Fetch/EE-Thumb → st.error + st.info mit Login-Hinweis."
+
+allowed_patterns:
+  - "Scaffold → Region-UI → DOY-Composite → Visualize (clip mask_fc) → GIF (getVideoThumbURL) → Overlay (label_gif_with_month) → Map(left)/Animation(right) → Expander"
+  - "Genau ein Scaffold; genau ein Render-Pfad; keine alternativen Paletten/Parameter."
+
+few_shot_components:
+  - "fs_ndvi_scaffold"
+  - "fs_ndvi_geo_lists"
+  - "fs_ndvi_doy_composite"
+  - "fs_ndvi_label_overlay"
+  - "fs_ndvi_visualize_render"
+
+notes: >
+  Der Composer/Planner schreibt den End-Code neu (kein String-Concat). Diese Few-Shot-Komponenten
+  sind Referenzen für Namen/Konstanten/Reihenfolge/Topologie, um die Vorlage 1:1 nachzubilden.
