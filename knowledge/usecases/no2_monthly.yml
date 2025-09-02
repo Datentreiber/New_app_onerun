@@ -1,0 +1,36 @@
+id: no2_monthly
+title: "Air Quality — Monthly NO₂ (S5P NRTI L3)"
+description: >
+  Darstellung der bodennahen NO₂-Säulendichte als Monatsmittelkarte.
+  Zeitfenster: Erster Tag des Monats (inklusive) bis Erster Tag des Folgemonats (exklusive).
+  Visualisierung: lineare Skala in mol/m², definierte Palette, Split-Map rechts, Colorbar mit Label.
+
+datasets:
+  - id: "COPERNICUS/S5P/NRTI/L3_NO2"
+    band: "NO2_column_number_density"
+    reducer: "mean"
+    unit: "mol/m²"
+
+invariants:
+  scaffold: "Genau einmal: Imports, Page-Config, EE-Auth (geemap.ee_initialize)"
+  map_ui: "Map-Init, Basemap, Geocode-Textfeld, Marker, set_center, st.session_state['zoom_level']=8"
+  time_window: "Jahr + Monat → [start, end) als Monatsgrenzen"
+  visualize: "no2_vis = {min: 0.0, max: 0.0002, palette: ['#000000', '#120E3B', '#3E1E60', '#7C1D6F', '#B01764', '#D13A4E', '#E66D3C']}"
+  render: "rechte Split-Map belegt, Colorbar 'NO₂ column (mol/m²)', Map.to_streamlit()"
+  naming: "Bezeichner wie in den Vorlagen beibehalten (z. B. no2_vis, month2idx)"
+
+allowed_patterns:
+  - "Scaffold → Map-Setup → Time-Window → Acquire/Reduce → Visualize → Render"
+  - "Keine alternativen Paletten/Min-Max/Bänder; keine zusätzlichen UI-Elemente"
+  - "Genau ein Render-Pfad (rechte Split-Map belegt)"
+
+few_shot_components:
+  - "fs_no2_scaffold"
+  - "fs_no2_map_ui"
+  - "fs_no2_time_window"
+  - "fs_no2_acquire_reduce"
+  - "fs_no2_visualize_render"
+
+notes: >
+  Der Composer/Planner schreibt den Code neu. Die Few-Shot-Komponenten dienen als Referenzen
+  für Syntax, Bezeichner, Reihenfolge und konkrete Konstanten.
