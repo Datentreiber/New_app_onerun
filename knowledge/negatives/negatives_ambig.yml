@@ -1,8 +1,0 @@
-id: negatives_ambig
-cases:
-  - user: "Zeig mir die saubersten Städte"
-    issue: "Semantisch unklar (Luft? Wasser? Boden?)"
-    guidance: "Natürliche Rückfrage: 'Meinst du Luftqualität (NO₂/PM), Wasserqualität oder etwas anderes?'"
-  - user: "Mach mal cool spots überall"
-    issue: "AOI offen, aber UI deckt das ab"
-    guidance: "Nicht fragen; UI mit Geocoding/Upload bereitstellen und Hinweis geben."
