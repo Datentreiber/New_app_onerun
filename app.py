@@ -1,20 +1,22 @@
-# app.py — talk2earth (Agents SDK + Streamlit) — Chat-UI, Function Tools, Streamlit-Runner
+# app.py — talk2earth (Agents SDK + Streamlit)
+# Vollständige Chat-UI mit Function-Tools, echtem Agents-Session-State, Code-Runner
 import os
 import re
 import json
+import uuid
 import pathlib
 import subprocess
 from typing import Optional, List
 
 import streamlit as st
-import asyncio  # <— NEU: für Event-Loop-Fix
+import asyncio  # Event-Loop-Fix für Streamlit-Thread
 
 BASE_DIR = pathlib.Path(__file__).parent.resolve()
 
 # ===== Agents SDK korrekt importieren =========================================
 AGENTS_OK = True
 try:
-    from agents import Agent, Runner, function_tool
+    from agents import Agent, Runner, function_tool, SQLiteSession
     from agents.models.openai_responses import OpenAIResponsesModel
     from openai import AsyncOpenAI
 except Exception as e:
@@ -32,17 +34,30 @@ PROMPTS_DIR = BASE_DIR / "knowledge" / "prompts"
 MASTER_PROMPT = load_text_file(
     PROMPTS_DIR / "layer1_master.md",
     fallback=(
-        "You are an EO analyst agent. Always output full Streamlit apps with interactive AOI/time/params widgets. "
-        "Ask at most one semantic question only if a fixed, non-interactive output would otherwise be wrong."
+        "You are the only Composer/Planner. Source allowed patterns and few-shot blocks; "
+        "derive a strict phase plan (Scaffold→Map/UI→Acquire→(Process)→Reduce→Visualize→Render); "
+        "then write the complete Streamlit app from scratch, 1:1 to the references, no inventions."
     )
 )
 GATES_PROMPT = load_text_file(
     PROMPTS_DIR / "gates.md",
-    fallback="Before answering, self-check Q1..Q5 and fix violations in the same turn."
+    fallback="Enforce: single Scaffold first; one acquire chain; exact visuals; one render path; no alternative params."
 )
 ITERATION_PROMPT = load_text_file(
     PROMPTS_DIR / "iteration.md",
-    fallback="When existing code is present, treat it as source of truth; apply only requested minimal changes; output full updated Streamlit code."
+    fallback="Ask at most one focused question only if a required choice within one UC is missing. Otherwise single-pass."
+)
+CHEATSHEET_PROMPT = load_text_file(
+    PROMPTS_DIR / "composer_cheatsheet.md",
+    fallback=(
+        "# Composer Cheatsheet\n"
+        "1) tool_list_packs('usecases') → UC wählen\n"
+        "2) tool_get_pack(UC) → invariants/allowed_patterns/few_shot_components\n"
+        "3) Für jede ID in few_shot_components: tool_get_component(ID)\n"
+        "4) Layer-2: Phasenplan (Scaffold→Map→Acquire→(Process)→Reduce→Visualize→Render)\n"
+        "5) Layer-3: Vollständigen Streamlit-Code neu schreiben (keine Erfindungen)\n"
+        "6) Fehler/Nullfälle wie in Vorlagen behandeln.\n"
+    )
 )
 
 # ===== FS-Pfade ===============================================================
@@ -104,18 +119,34 @@ def tool_get_pack(pack_id: str) -> str:
 
 @function_tool
 def tool_get_component(component_id: str) -> str:
-    """Return Python text (.py.txt) of a component."""
-    f = COMPONENTS_DIR / f"{component_id}.py.txt"
-    if f.exists():
-        return f.read_text(encoding="utf-8")
+    """Return Python text of a component (.py preferred, fallback .py.txt)."""
+    for ext in (".py", ".py.txt"):
+        f = COMPONENTS_DIR / f"{component_id}{ext}"
+        if f.exists():
+            return f.read_text(encoding="utf-8")
     return json.dumps({"error": f"component '{component_id}' not found"})
 
 @function_tool
+def tool_list_components(prefix: Optional[str] = None) -> str:
+    """
+    List available component IDs (fs_*). Accepts .py and .py.txt. Optional prefix filter.
+    """
+    ids = set()
+    if COMPONENTS_DIR.exists():
+        for p in COMPONENTS_DIR.glob("*.py"):
+            ids.add(p.stem)
+        for p in COMPONENTS_DIR.glob("*.py.txt"):
+            ids.add(p.stem)
+    out = sorted([i for i in ids if not prefix or i.startswith(prefix)])
+    return json.dumps({"ids": out}, ensure_ascii=False)
+
+@function_tool
 def tool_get_util(util_id: str) -> str:
-    """Return Python text (.py.txt) of a util helper."""
-    f = UTILS_DIR / f"{util_id}.py.txt"
-    if f.exists():
-        return f.read_text(encoding="utf-8")
+    """Return Python text of a util helper (.py preferred, fallback .py.txt)."""
+    for ext in (".py", ".py.txt"):
+        f = UTILS_DIR / f"{util_id}{ext}"
+        if f.exists():
+            return f.read_text(encoding="utf-8")
     return json.dumps({"error": f"util '{util_id}' not found"})
 
 @function_tool
@@ -154,7 +185,7 @@ def tool_run_python(code: str,
         except subprocess.TimeoutExpired as e:
             return json.dumps({
                 "ok": False,
-                "stdout": (e.stdout or "")[-15000:],
+                "stdout": (getattr(e, "stdout", "") or "")[-15000:],
                 "stderr": f"TIMEOUT after {timeout_sec}s",
                 "path": str(target),
                 "mode": "script"
@@ -169,7 +200,6 @@ def tool_run_python(code: str,
                 stderr=subprocess.PIPE,
                 text=True
             )
-            # kleine Wartezeit: eine Zeile lesen (nicht blockieren)
             try:
                 bootstrap = proc.stdout.readline().strip() if proc.stdout else ""
             except Exception:
@@ -206,13 +236,14 @@ def ensure_event_loop() -> None:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
 
-# ===== Agent Setup ============================================================
+# ===== Agent Setup + echte SDK-Session ========================================
 if AGENTS_OK:
     openai_client = AsyncOpenAI()  # liest OPENAI_API_KEY
+
     agent = Agent(
         name="EO-Agent",
-        instructions="\n\n".join([MASTER_PROMPT, GATES_PROMPT, ITERATION_PROMPT]),
-        tools=[tool_list_packs, tool_get_pack, tool_get_component, tool_get_util, tool_run_python],
+        instructions="\n\n".join([MASTER_PROMPT, GATES_PROMPT, ITERATION_PROMPT, CHEATSHEET_PROMPT]),
+        tools=[tool_list_packs, tool_get_pack, tool_get_component, tool_list_components, tool_get_util, tool_run_python],
         model=OpenAIResponsesModel(model=os.environ.get("OPENAI_MODEL", "gpt-4o"), openai_client=openai_client),
     )
 
@@ -236,13 +267,29 @@ with st.sidebar:
     st.divider()
     st.caption("Hinweis: AOI/Zeitraum/Parameter werden in den **generierten Apps** interaktiv bereitgestellt.")
 
-# Chat-Speicher
+# Chat-Speicher (UI) — unabhängig von der SDK-Session
 if "messages" not in st.session_state:
     st.session_state.messages = []  # [{"role":"user"/"assistant","content":str}]
 if "last_code" not in st.session_state:
     st.session_state.last_code = ""
+if "agent_session_id" not in st.session_state:
+    # per Browser-Session eine stabile ID
+    st.session_state.agent_session_id = uuid.uuid4().hex
 
-# Verlauf rendern
+# SDK-Session herstellen (ohne externe DB)
+# Option A: in-memory (flüchtig) — SQLiteSession(session_id)  → db_path=":memory:"
+# Option B: Datei im Container — bleibt erhalten solange der App-Prozess/Container lebt
+try:
+    SESSIONS_DB = str((RUNNER_DIR / "sessions.db").resolve())
+    sdk_session = SQLiteSession(st.session_state.agent_session_id, SESSIONS_DB)
+    with st.sidebar:
+        st.caption(f"Session: {st.session_state.agent_session_id[:8]}… (SQLite @ {SESSIONS_DB})")
+except Exception as e:
+    sdk_session = SQLiteSession(st.session_state.agent_session_id)  # in-memory fallback
+    with st.sidebar:
+        st.warning(f"SDK-Session init: Fallback in-memory ({e})")
+
+# Verlauf (UI) rendern
 for m in st.session_state.messages:
     with st.chat_message(m["role"]):
         st.markdown(m["content"])
@@ -251,7 +298,7 @@ def extract_first_python_block(text: str) -> Optional[str]:
     m = re.search(r"```(?:python)?\s*(.+?)```", text, flags=re.DOTALL | re.IGNORECASE)
     return m.group(1).strip() if m else None
 
-# Chat-Eingabe (richtiger „Senden“-Flow)
+# Chat-Eingabe
 prompt = st.chat_input("Nachricht an den Agenten eingeben und mit Enter senden…")
 if prompt:
     # 1) User Nachricht anzeigen/speichern
@@ -259,7 +306,7 @@ if prompt:
     with st.chat_message("user"):
         st.markdown(prompt)
 
-    # 2) Agent call (mit optionaler Iterations-Injektion)
+    # 2) Agent call mit Iterations-Injektion + echter SDK-Session
     if not AGENTS_OK:
         answer = "**Fehler:** Agents SDK nicht verfügbar. Bitte `pip install openai-agents openai` und den Server neu starten."
     else:
@@ -270,10 +317,15 @@ if prompt:
         if st.session_state.messages[:-1]:
             history_note = "\n\n[HISTORY NOTE] Continue this session; respond naturally and follow iteration rules.\n"
 
-        # >>>> FIX: Sicherstellen, dass ein Event-Loop existiert (Streamlit-Thread)
+        # Event-Loop sicherstellen
         ensure_event_loop()
 
-        result = Runner.run_sync(agent, input=(prompt + history_note + iteration_context))
+        # >>> WICHTIG: echte SDK-Session übergeben
+        result = Runner.run_sync(
+            agent,
+            input=(prompt + history_note + iteration_context),
+            session=sdk_session
+        )
         answer = result.final_output or ""
 
     # 3) Assistant Nachricht rendern
@@ -282,7 +334,7 @@ if prompt:
 
     st.session_state.messages.append({"role": "assistant", "content": answer})
 
-    # 4) Falls Code dabei: extrahieren und separat anzeigen + Run-Buttons einblenden
+    # 4) Falls Code erkannt: separat anzeigen + Run-Buttons
     code_block = extract_first_python_block(answer)
     if code_block:
         st.session_state.last_code = code_block
