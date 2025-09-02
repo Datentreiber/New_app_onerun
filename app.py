@@ -1,5 +1,5 @@
-# app.py — talk2earth (Agents SDK + Streamlit)
-# Vollständige Chat-UI mit Function-Tools, echtem Agents-Session-State, Code-Runner
+# app.py — talk2earth (Agents SDK + Streamlit) — mit Inline-Mini-App Runner
+# Vollständige Chat-UI mit Function-Tools, echter Agents-Session, Code-Runner (script/streamlit) + INLINE-RUNNER
 import os
 import re
 import json
@@ -160,6 +160,7 @@ def tool_run_python(code: str,
     - mode="script": python file.py (returns stdout/stderr)
     - mode="streamlit": streamlit run file.py --server.headless --server.port {port}
                         (returns url + pid + short bootstrap log)
+    Hinweis: Auf Streamlit Cloud ist die zweite Streamlit-Instanz i. d. R. NICHT sichtbar.
     """
     if not filename:
         filename = "app_run.py"
@@ -210,7 +211,7 @@ def tool_run_python(code: str,
                 "url": url,
                 "pid": proc.pid,
                 "path": str(target),
-                "hint": "Öffne die URL im Browser. Beende den Prozess bei Bedarf manuell.",
+                "hint": "Auf Streamlit Cloud meist nicht sichtbar (zweite Instanz). Inline-Runner nutzen.",
                 "mode": "streamlit",
                 "bootstrap_log": bootstrap[-2000:]
             }, ensure_ascii=False)
@@ -235,6 +236,62 @@ def ensure_event_loop() -> None:
     except RuntimeError:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
+
+# ===== INLINE RUNNER: führt Mini-App im aktuellen Streamlit aus ===============
+def run_mini_app_inline(code: str, container: "st.delta_generator.DeltaGenerator") -> None:
+    """
+    Führt den übergebenen Streamlit-Code inline innerhalb des angegebenen Containers aus.
+    - Unterdrückt st.set_page_config (No-Op), um Doppelaufrufe zu vermeiden.
+    - Setzt __name__="__main__", damit 'if __name__ == "__main__":' in generiertem Code greift.
+    - Führt den Code unter 'with container:' aus, damit alle st.*-Ausgaben im Mini-App-Bereich landen.
+    """
+    # Spätimport (damit die App ohne EE/Geemap auch startet)
+    try:
+        import ee
+    except Exception:
+        ee = None
+    try:
+        import geemap
+        import geemap.foliumap as geemap_folium
+        from geemap.foliumap import Map
+    except Exception:
+        geemap = None
+        geemap_folium = None
+        Map = None
+    try:
+        import folium
+    except Exception:
+        folium = None
+
+    # st.set_page_config patchen → No-Op
+    original_set_page_config = st.set_page_config
+    try:
+        st.set_page_config = lambda *a, **k: None  # No-Op im Mini-App-Kontext
+
+        # Ausführung im Ziel-Container
+        with container:
+            # Separater Namespace mit __main__-Semantik
+            exec_globals = {
+                "__name__": "__main__",
+                "st": st,
+                "ee": ee,
+                "geemap": geemap,
+                "folium": folium,
+            }
+            # Optional bequeme Aliase, falls der Code sie direkt importfrei nutzt
+            if geemap_folium:
+                exec_globals["geemap_folium"] = geemap_folium
+            if Map:
+                exec_globals["Map"] = Map
+
+            try:
+                exec(code, exec_globals)
+            except Exception as e:
+                st.error(f"Mini-App exception: {e}")
+                st.exception(e)
+    finally:
+        # Patch zurücksetzen
+        st.set_page_config = original_set_page_config
 
 # ===== Agent Setup + echte SDK-Session ========================================
 if AGENTS_OK:
@@ -318,7 +375,10 @@ if prompt:
             history_note = "\n\n[HISTORY NOTE] Continue this session; respond naturally and follow iteration rules.\n"
 
         # Event-Loop sicherstellen
-        ensure_event_loop()
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            asyncio.set_event_loop(asyncio.new_event_loop())
 
         # >>> WICHTIG: echte SDK-Session übergeben
         result = Runner.run_sync(
@@ -334,21 +394,29 @@ if prompt:
 
     st.session_state.messages.append({"role": "assistant", "content": answer})
 
-    # 4) Falls Code erkannt: separat anzeigen + Run-Buttons
+    # 4) Falls Code erkannt: separat anzeigen + Run-Buttons + Inline-Mini-App
     code_block = extract_first_python_block(answer)
     if code_block:
         st.session_state.last_code = code_block
         st.write("---")
         st.subheader("Erkannter Code aus der letzten Antwort")
         st.code(code_block, language="python")
-        c1, c2 = st.columns(2)
-        if c1.button("Run in Runner (script)"):
+
+        c1, c2, c3 = st.columns(3)
+        if c1.button("Run inline (empfohlen)"):
+            mini_container = st.container()
+            with st.spinner("Starte Mini-App inline…"):
+                run_mini_app_inline(code_block, mini_container)
+
+        if c2.button("Run in Runner (script)"):
             with st.spinner("Runner (script)…"):
                 res = json.loads(tool_run_python(code_block, mode="script"))  # type: ignore
             st.write(res)
-        if c2.button("Run in Runner (streamlit)"):
+
+        if c3.button("Run in Runner (streamlit)"):
             with st.spinner("Runner (streamlit)…"):
                 res = json.loads(tool_run_python(code_block, filename="agent_streamlit.py", mode="streamlit", port=8502))  # type: ignore
             st.write(res)
             if res.get("ok") and res.get("url"):
-                st.success(f"App läuft: {res['url']}  (PID: {res.get('pid')})")
+                st.info("Hinweis: Auf Streamlit Cloud ist die zweite Instanz in der Regel nicht erreichbar.")
+                st.success(f"Lokale URL (falls lokal ausgeführt): {res['url']}  (PID: {res.get('pid')})")
