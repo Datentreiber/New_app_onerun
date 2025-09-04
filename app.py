@@ -12,6 +12,11 @@ from typing import Optional, List, Dict, Any
 
 import streamlit as st
 import asyncio  # Event-Loop-Fix für Streamlit-Thread
+# ... existing imports ...
+import os
+
+# --- Agent run limits (configurable via env var) ---
+DEFAULT_MAX_TURNS = int(os.getenv("AGENT_MAX_TURNS", "100"))  # raise from SDK default (~12)
 
 BASE_DIR = pathlib.Path(__file__).parent.resolve()
 
@@ -341,8 +346,10 @@ if prompt:
         result = Runner.run_sync(
             agent,
             input=(prompt + history_note + iteration_context),
-            session=sdk_session  # type: ignore
+            session=sdk_session,  # type: ignore
+            max_turns=DEFAULT_MAX_TURNS,  # <-- allow enough tool/LLM steps per run
         )
+
         answer = result.final_output or ""
 
     # 3) Assistant-Antwort rendern — Markdown anzeigen
@@ -369,3 +376,4 @@ if prompt:
             if res.get("ok") and res.get("url"):
                 st.info("Hinweis: Auf Streamlit Cloud ist die zweite Instanz in der Regel nicht erreichbar.")
                 st.success(f"Lokale URL (falls lokal ausgeführt): {res['url']}  (PID: {res.get('pid')})")
+
