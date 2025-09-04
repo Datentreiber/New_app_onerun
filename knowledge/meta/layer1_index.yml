@@ -1,6 +1,4 @@
-# ==== Ergänzungsvorschlag für knowledge/meta/layer1_index.yml ====
 version: 1
-# Governance: global & append-only. Neue UCs ergänzen Einträge; bestehende Keys nicht überschreiben.
 
 facets:
   phenomenon:
