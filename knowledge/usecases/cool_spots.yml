@@ -14,26 +14,18 @@ param_spec:
       ask_policy: "always"
     - id: time_year
       type: int
-      range: [1980, 2035]
+      range: [2013, 2025]
+      default: "current_year"
       ask_policy: "always"
-  optional:
-    - id: left_year
-      type: int
-      range: [1980, 2035]
-      default: 2018
-    - id: right_year
-      type: int
-      range: [1980, 2035]
-      default: 2024
-    - id: percentile
-      type: int
-      range: [10, 99]
-      default: 90
+
+ui_widgets_library:
+  year_slider_int: "blocks/components/ui/slider_int.py"
+  year_number_input: "blocks/components/ui/number_input_int.py"
 
 invariants:
-  summer_months: [6, 7, 8]
-  sensor: "Landsat 8/9 SR (LST)"
-  scale_m: 30
+  dataset: "LANDSAT L2 (LC08/LC09 C02 T1 L2)"
+  qa_mask_bits_zero: [1, 2, 3, 4, 5]
+  lst_formula_kelvin: "LST_K = ST_B10 * 0.00341802 + 149.0"
   to_celsius: "LST_C = LST_K - 273.15"
 
 visualize_presets:
@@ -48,17 +40,18 @@ allowed_patterns:
   - "Scaffold → Acquire → Process → Reduce → Visualize → Render"
 
 capabilities_required: ["aoi","summer_window"]
-capabilities_provided: ["split_map","single_map","colorbar"]
+capabilities_provided: ["qa_mask_l2","lst_celsius","visualize_hot","split_map"]
 
 ui_contracts:
+  bindings:
+    time_year: "int"
   variables_map:
     year: "time_year"
-    percentile: "percentile"
 
 render_pattern: "split_map_right"
 
 checks:
-  - "Wenn Sommerfenster leer: Hinweis (Wolken oder Jahresauswahl prüfen)."
+  - "Wenn die Bildsammlung leer ist: Hinweis ausgeben und Parameter prüfen."
 
 few_shot_components:
   - "blocks/components/gee/aoi_from_spec.py"
