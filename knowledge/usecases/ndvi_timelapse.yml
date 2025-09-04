@@ -1,39 +1,70 @@
-id: ndvi_timelapse
-title: "NDVI Timelapse — MODIS/061/MOD13A2 (Median-per-DOY GIF)"
-description: >
-  Jahreszyklische NDVI-Animation basierend auf MODIS/061/MOD13A2 (Band: NDVI).
-  Vorgehen: Für jede Tageszahl im Jahr (DOY) werden über die gesamte Kollektion alle Bilder
-  mit demselben DOY zusammengeführt und per Median reduziert. Daraus entsteht eine
-  sequenzielle Bildfolge, die als GIF gerendert wird. Die Frames erhalten ein
-  Monatslabel-Overlay (z. B. 'January', 'February', ...).
+version: 2
+id: "ndvi_timelapse"
+title: "NDVI Timelapse (Monatsverlauf)"
+purpose: "Vegetationsverlauf über ein Jahr als DOY-Median-Animation zeigen."
 
-datasets:
-  - id: "MODIS/061/MOD13A2"
-    band: "NDVI"
-    reducer: "median-per-DOY"
-    note: "DOY-Tag kommt aus system:time_start → getRelative('day','year')."  # exact approach
+param_spec:
+  required:
+    - id: aoi_spec
+      type: object
+      variants:
+        - { type: "bbox", bbox: [0, 0, 0, 0] }
+        - { type: "point_buffer", point: [0, 0], radius_km: 0 }
+        - { type: "place", name: "", radius_km: 0 }
+      ask_policy: "always"
+  optional:
+    - id: ref_year
+      type: int
+      range: [2001, 2025]
+      default: 2019
+      ask_policy: "prefer"
+    - id: fps
+      type: int
+      range: [1, 24]
+      default: 10
+      ask_policy: "prefer"
+    - id: dimensions
+      type: int
+      range: [256, 2048]
+      default: 600
+      ask_policy: "prefer"
+    - id: crs
+      type: string
+      default: "EPSG:3857"
+      ask_policy: "prefer"
+
+ui_widgets_library:
+  year_slider_int: "blocks/components/ui/slider_int.py"
+  year_number_input: "blocks/components/ui/number_input_int.py"
 
 invariants:
-  scaffold: "Genau einmal: Imports, Page-Config (Timelapses), EE-Auth (@st.cache_data, geemap.ee_initialize)."
-  region_ui: "Auswahl zwischen Kontinent (WORLD_REGIONS, Filter wld_rgn) oder Land (COUNTRIES, Filter country_na) aus USDOS/LSIB_SIMPLE/2017."
-  doy_composite: "ref_year=2019 liefert die Menge der DOYs; Join über equals(doy), saveAll(matchesKey='doy_matches'), reducer=median."
-  vis_params: "min=0.0, max=9000.0, NDVI-Palette wie Vorlage."
-  gif_params: "region=bounds(mask_fc), dimensions=600, crs='EPSG:3857', framesPerSecond=10."
-  labeling: "label_gif_with_month: overlay pro Frame mit Monatsname; DejaVuSans.ttf (Fallback: default); Textbbox+Hintergrundkasten."
-  render: "Links: Karte (Boundary+Preview des ersten Frames). Rechts: GIF (mit Monats-Overlay). Expander: Beschreibung."
-  error_handling: "Fail beim GIF-Fetch/EE-Thumb → st.error + st.info mit Login-Hinweis."
+  dataset: "MODIS/061/MOD13A2"
+  band: "NDVI"
+  composite_method: "median_per_DOY"
+
+visualize_presets:
+  - id: "ndvi_default"
+    vis_params:
+      min: 0.0
+      max: 9000.0
+      palette: ["#FFFFFF","#CE7E45","#DF923D","#F1B555","#FCD163","#99B718","#74A901","#66A000","#529400","#3E8601","#207401","#056201","#004C00","#023B01","#012E01","#011D01","#011301"]
+      opacity: 1.0
 
 allowed_patterns:
-  - "Scaffold → Region-UI → DOY-Composite → Visualize (clip mask_fc) → GIF (getVideoThumbURL) → Overlay (label_gif_with_month) → Map(left)/Animation(right) → Expander"
-  - "Genau ein Scaffold; genau ein Render-Pfad; keine alternativen Paletten/Parameter."
+  - "Scaffold → Acquire → Process → Reduce → Visualize → Render"
+
+capabilities_required: ["aoi"]
+capabilities_provided: ["ndvi_doy_composite","animation","single_map"]
+
+ui_contracts:
+  variables_map: {}
+
+render_pattern: "map_plus_gif"
+
+checks:
+  - "Wenn DOY-Collection leer ist: Hinweis ausgeben (Account/Zeitraum prüfen)."
 
 few_shot_components:
-  - "fs_ndvi_scaffold"
-  - "fs_ndvi_geo_lists"
-  - "fs_ndvi_doy_composite"
-  - "fs_ndvi_label_overlay"
-  - "fs_ndvi_visualize_render"
-
-notes: >
-  Der Composer/Planner schreibt den End-Code neu (kein String-Concat). Diese Few-Shot-Komponenten
-  sind Referenzen für Namen/Konstanten/Reihenfolge/Topologie, um die Vorlage 1:1 nachzubilden.
+  - "blocks/components/gee/aoi_from_spec.py"
+  - "blocks/components/gee/ndvi_acquire_process.py"
+  - "blocks/components/visual/map_plus_gif.py"
