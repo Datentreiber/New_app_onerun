@@ -1,44 +1,61 @@
-id: urban_change
-title: "Urban Change — GHSL Built-up Surface (JRC/GHSL/P2023A/GHS_BUILT_S)"
-description: >
-  Visualisierung und Vergleich der bebauten Fläche (m² je 100 m-Zelle) über GHSL-Epochen.
-  Varianten: Vor/Nach (1980 vs 2025), Multi-Select (mehrere Jahre als Layer-Stack),
-  Split-Select (zwei Jahre wählbar in Split-Map), Zeit-Slider (ein Jahr über Slider),
-  Geocode + Low-Value-Mask + Opacity (Schwellwertmaske und Opazität),
-  sowie With-Stats (Zeitreihe der bebauten Fläche in km² für eine Region).
+version: 2
+id: "urban_built"
+title: "Städtische Bebauung im Zeitverlauf"
+purpose: "Ausmaß der bebauten Fläche über Jahre vergleichen."
 
-datasets:
-  - id: "JRC/GHSL/P2023A/GHS_BUILT_S"
-    band: "built_surface"
-    epochs: [1975, 1980, 1985, 1990, 1995, 2000, 2005, 2010, 2015, 2020, 2025, 2030]
-    unit: "m² per 100 m grid"
+param_spec:
+  required:
+    - id: aoi_spec
+      type: object
+      variants:
+        - { type: "bbox", bbox: [0, 0, 0, 0] }
+        - { type: "point_buffer", point: [0, 0], radius_km: 0 }
+        - { type: "place", name: "", radius_km: 0 }
+      ask_policy: "always"
+  optional:
+    - id: left_year
+      type: int
+      range: [1980, 2030]
+      default: 1980
+      ask_policy: "prefer"
+    - id: right_year
+      type: int
+      range: [1980, 2030]
+      default: 2025
+      ask_policy: "prefer"
+
+ui_widgets_library:
+  year_slider_int: "blocks/components/ui/slider_int.py"
+  year_number_input: "blocks/components/ui/number_input_int.py"
 
 invariants:
-  scaffold: "Genau einmal: Imports, Page-Config, GHSL_PREFIX, ghsl_vis."
-  map_ui: "geemap.Map(basemap='SATELLITE') + 'CartoDB.PositronOnlyLabels'."
-  simple: "Split-Map 1980 (links) vs 2025 (rechts), Colorbar (horizontal, Label wie Vorlage)."
-  multi_select: "Mehrere Jahre als Layer-Stack, Colorbar."
-  split_select: "Dropdown für linkes & rechtes Jahr, Split-Map, Colorbar."
-  time_slider: "select_slider über Epochen, Einzel-Layer, Colorbar."
-  geocode_mask_opacity: "Geocode→set_center(zoom=12); Maskenschwelle 1; selfMask(); Opazitäts-Slider; Split-Map 1980/2025; Colorbar."
-  with_stats: "Region = Rechteck [113.75,22.36,114.63,22.89]; reduceRegion(sum) @ scale 100; km² = m²/1e6; Serie 1975..2030 in 5er-Schritten; Matplotlib-Linie + DataFrame; Map links, Chart+DF rechts."
-  visualize: "ghsl_vis = {min:0, max:8000, palette:[... exakt wie Vorlage]}; Colorbar-Position/-Beschriftung exakt wie Vorlage."
-  naming: "Bezeichner beibehalten (GHSL_PREFIX, ghsl_vis); Funktionssignaturen pro Variante konsistent mit Vorlagen."
+  dataset: "GHSL Built Surface (JRC)"
+  band: "built_surface"
+
+visualize_presets:
+  - id: "ghsl_default"
+    vis_params:
+      min: 0
+      max: 10000
+      palette: ["#f7fbff","#c6dbef","#6baed6","#2171b5"]
+      opacity: 0.6
 
 allowed_patterns:
-  - "Scaffold → (Variante wählen) → Acquire(year→image.select('built_surface')) → (optional) Mask/Threshold → Visualize(ghsl_vis) → Render(Split/Stack/Slider/Stats) → Colorbar"
-  - "Genau ein Scaffold; genau ein Render-Pfad der gewählten Variante."
-  - "Keine alternativen Paletten/Parameter; keine zusätzliche UI."
+  - "Scaffold → Acquire → Visualize → Render"
+
+capabilities_required: ["aoi"]
+capabilities_provided: ["split_map","single_map","multi_layer"]
+
+ui_contracts:
+  variables_map: {}
+
+render_pattern: "split_map_right"
+
+checks:
+  - "Falls Jahr nicht verfügbar: Hinweis und Auswahl einschränken."
 
 few_shot_components:
-  - "fs_urban_scaffold"
-  - "fs_urban_simple_and_split"
-  - "fs_urban_multi_select"
-  - "fs_urban_time_slider"
-  - "fs_urban_geocode_mask_opacity"
-  - "fs_urban_with_stats"
-
-notes: >
-  Der Composer/Planner schreibt den End-Code neu (kein String-Concat). Diese Few-Shot-Komponenten
-  sind Referenzen für Reihenfolge, Konstanten, Namen und Render-Topologie. Ziel ist 1:1-Reproduktion
-  der bestehenden App-Varianten, ohne Erfindungen (bis explizit erlaubt).
+  - "blocks/components/gee/aoi_from_spec.py"
+  - "blocks/components/visual/split_map_right.py"
+  - "blocks/components/ui/slider_int.py"
+  - "blocks/components/ui/number_input_int.py"
