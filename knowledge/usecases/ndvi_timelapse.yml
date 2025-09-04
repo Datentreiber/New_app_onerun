@@ -42,7 +42,6 @@ invariants:
   band: "NDVI"
   composite_method: "median_per_DOY"
 
-
 visualize_presets:
   - id: "ndvi_default"
     vis_params:
@@ -58,7 +57,13 @@ capabilities_required: ["aoi"]
 capabilities_provided: ["ndvi_doy_composite","animation","single_map"]
 
 ui_contracts:
-@@ -67,4 +49,4 @@
+  variables_map: {}
+
+render_pattern: "map_plus_gif"
+
+checks:
+  - "Wenn DOY-Collection leer ist: Hinweis ausgeben (Account/Zeitraum prüfen)."
+
 few_shot_components:
   - "blocks/components/gee/aoi_from_spec.py"
   - "blocks/components/gee/ndvi_acquire_process.py"
