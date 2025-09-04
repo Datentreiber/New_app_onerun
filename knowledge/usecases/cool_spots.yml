@@ -55,8 +55,8 @@ checks:
 
 few_shot_components:
   - "blocks/components/gee/aoi_from_spec.py"
-  - "blocks/components/gee/summer_window.py"
-  - "blocks/components/gee/lst_acquire_process.py"
+  - "blocks/components/gee/cool_spots_time.py"
+  - "blocks/components/gee/cool_spots_acquire_process.py"
   - "blocks/components/visual/split_map_right.py"
   - "blocks/components/ui/slider_int.py"
   - "blocks/components/ui/number_input_int.py"
