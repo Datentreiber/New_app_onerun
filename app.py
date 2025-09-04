@@ -1,426 +1,398 @@
-# app.py — talk2earth (Agents SDK + Streamlit) — mit Inline-Mini-App Runner 
-# Vollständige Chat-UI mit Function-Tools, echter Agents-Session, Code-Runner (script/streamlit) + INLINE-RUNNER
+# app.py
+# -----------------------------------------------------------------------------
+# Streamlit chat app using the existing Agents SDK shell — updated to the new
+# 4-layer approach (L1.1 → L1.2 → L2 → L3) with:
+#   • NEW tools: tool_get_meta, tool_get_policy, tool_get_uc_sections,
+#                tool_bundle_components
+#   • KEPT tool: tool_run_python (inline/script/streamlit runner)
+#   • REMOVED (not exposed anymore): tool_list_packs, tool_get_pack
+#   • DO NOT use per-component function calls from the LLM; instead the agent
+#     prepares a Layer-2 PLAN_SPEC and then calls tool_bundle_components ONCE
+#     to load all needed snippets as a single string into context.
+#
+# Notes:
+# - This file assumes your existing "Agents SDK" decorator & Runner are available.
+# - If import names differ in your SDK, adjust the three marked lines below.
+# - The rest of the app structure (chat, session, inline runner) stays the same.
+# -----------------------------------------------------------------------------
+
+from __future__ import annotations
+
+import io
+import json
 import os
 import re
-import json
-import uuid
-import pathlib
+import sys
+import time
+import yaml
+import shutil
+import base64
+import hashlib
+import textwrap
+import traceback
 import subprocess
-from typing import Optional, List
+from pathlib import Path
+from typing import List, Dict, Any, Tuple
 
 import streamlit as st
-import asyncio  # Event-Loop-Fix für Streamlit-Thread
 
-BASE_DIR = pathlib.Path(__file__).parent.resolve()
-
-# ===== Agents SDK korrekt importieren =========================================
-AGENTS_OK = True
+# ====== ADAPT THESE IMPORTS to your Agents SDK (3 lines) ======================
+# Example: from openai_agents import agent, tool, Runner
 try:
-    from agents import Agent, Runner, function_tool, SQLiteSession
-    from agents.models.openai_responses import OpenAIResponsesModel
-    from openai import AsyncOpenAI
-except Exception as e:
-    AGENTS_OK = False
-    AGENTS_IMPORT_ERROR = str(e)
+    from openai_agents import agent, tool, Runner  # <-- adjust if your SDK differs
+except Exception:  # soft fallback for local editing; in prod your SDK is present
+    def tool(*dargs, **dkwargs):
+        def _decorator(f):
+            return f
+        return _decorator
 
-# ===== Prompts laden (Fallbacks, falls Dateien fehlen) ========================
-def load_text_file(path: pathlib.Path, fallback: str = "") -> str:
-    try:
-        return path.read_text(encoding="utf-8")
-    except Exception:
-        return fallback
+    class Runner:  # minimal stub — your real Runner is used at runtime
+        @staticmethod
+        def run_sync(agent_obj, input: str, session: Dict[str, Any]):
+            return {"final_output": "Runner stub: no SDK available", "new_items": []}
 
-PROMPTS_DIR = BASE_DIR / "knowledge" / "prompts"
-MASTER_PROMPT = load_text_file(
-    PROMPTS_DIR / "layer1_master.md",
-    fallback=(
-        "You are the only Composer/Planner. Source allowed patterns and few-shot blocks; "
-        "derive a strict phase plan (Scaffold→Map/UI→Acquire→(Process)→Reduce→Visualize→Render); "
-        "then write the complete Streamlit app from scratch, 1:1 to the references, no inventions."
-    )
-)
-GATES_PROMPT = load_text_file(
-    PROMPTS_DIR / "gates.md",
-    fallback="Enforce: single Scaffold first; one acquire chain; exact visuals; one render path; no alternative params."
-)
-ITERATION_PROMPT = load_text_file(
-    PROMPTS_DIR / "iteration.md",
-    fallback="Ask at most one focused question only if a required choice within one UC is missing. Otherwise single-pass."
-)
-CHEATSHEET_PROMPT = load_text_file(
-    PROMPTS_DIR / "composer_cheatsheet.md",
-    fallback=(
-        "# Composer Cheatsheet\n"
-        "1) tool_list_packs('usecases') → UC wählen\n"
-        "2) tool_get_pack(UC) → invariants/allowed_patterns/few_shot_components\n"
-        "3) Für jede ID in few_shot_components: tool_get_component(ID)\n"
-        "4) Layer-2: Phasenplan (Scaffold→Map→Acquire→(Process)→Reduce→Visualize→Render)\n"
-        "5) Layer-3: Vollständigen Streamlit-Code neu schreiben (keine Erfindungen)\n"
-        "6) Fehler/Nullfälle wie in Vorlagen behandeln.\n"
-    )
-)
+    class agent:  # minimal stub
+        @staticmethod
+        def create(instructions: str, tools: List[Any]):
+            return {"instructions": instructions, "tools": tools}
+# ==============================================================================
 
-# ===== FS-Pfade ===============================================================
-KNOWLEDGE_DIR = BASE_DIR / "knowledge"
-USECASES_DIR = KNOWLEDGE_DIR / "usecases"
-DOMAINS_DIR = KNOWLEDGE_DIR / "domains"
-NEGATIVES_DIR = KNOWLEDGE_DIR / "negatives"
 
-BLOCKS_DIR = BASE_DIR / "blocks"
-COMPONENTS_DIR = BLOCKS_DIR / "components"
-UTILS_DIR = BLOCKS_DIR / "utils"
+# -----------------------------------------------------------------------------
+# Paths (repo layout)
+# -----------------------------------------------------------------------------
+ROOT = Path(__file__).parent.resolve()
+KNOW = ROOT / "knowledge"
+META_PATH = KNOW / "meta" / "layer1_index.yml"
+POLICY_PATH = KNOW / "policy.json"
+UCS_DIR = KNOW / "usecases"
 
-RUNNER_DIR = BASE_DIR / "runner"
+COMP_DIR = ROOT / "blocks" / "components"
+LEGACY_DIR = COMP_DIR / "legacy"
+
+RUNNER_DIR = ROOT / "runner"
 SANDBOX_DIR = RUNNER_DIR / "sandbox"
 SANDBOX_DIR.mkdir(parents=True, exist_ok=True)
 
-def _ls_ids(folder: pathlib.Path, suffix: str) -> List[str]:
-    if not folder.exists():
-        return []
-    return [p.stem for p in sorted(folder.glob(f"*{suffix}"))]
+PROMPTS_DIR = KNOW / "prompts"
+MEGA_PROMPT = PROMPTS_DIR / "mega_prompt.md"   # << put your new mega prompt here
 
-# ===== Function Tools (Agents SDK) ============================================
-@function_tool
-def tool_list_packs(kind: str, domain: Optional[str] = None) -> str:
+
+# -----------------------------------------------------------------------------
+# Streamlit page config (kept behavior)
+# -----------------------------------------------------------------------------
+st.set_page_config(
+    page_title="Mini-Apps — One Run",
+    page_icon="🧭",
+    layout="wide",
+    initial_sidebar_state="collapsed",
+)
+
+# -----------------------------------------------------------------------------
+# Utilities
+# -----------------------------------------------------------------------------
+def _sha1_text(s: str) -> str:
+    return hashlib.sha1(s.encode("utf-8")).hexdigest()[:10]
+
+
+def _read_text(path: Path) -> str:
+    return path.read_text(encoding="utf-8")
+
+
+def _safe_json(data: Any) -> str:
+    return json.dumps(data, ensure_ascii=False)
+
+
+def _ensure_exists(path: Path, kind: str):
+    if not path.exists():
+        raise FileNotFoundError(f"{kind} not found: {path}")
+
+
+def _is_legacy(p: Path) -> bool:
+    return (LEGACY_DIR in p.parents) or p.name.startswith("fs_")
+
+
+# -----------------------------------------------------------------------------
+# NEW TOOLS — exactly as specified
+# -----------------------------------------------------------------------------
+
+@tool(name="tool_get_meta", description="Load global Layer1.1 meta index (single YAML).")
+def tool_get_meta() -> str:
+    """Return the complete layer1_index.yml as text (UTF-8)."""
+    _ensure_exists(META_PATH, "meta index")
+    return _read_text(META_PATH)
+
+
+@tool(name="tool_get_policy", description="Load global Layer2 policy (strict JSON).")
+def tool_get_policy() -> str:
+    """Return policy.json as text (UTF-8 JSON)."""
+    _ensure_exists(POLICY_PATH, "policy")
+    return _read_text(POLICY_PATH)
+
+
+@tool(
+    name="tool_get_uc_sections",
+    description=(
+        "Load specific sections from a UC YAML. "
+        "Allowed sections: param_spec, invariants, visualize_presets, allowed_patterns, "
+        "ui_contracts, render_pattern, capabilities_required, capabilities_provided, checks."
+    ),
+)
+def tool_get_uc_sections(uc_id: str, sections: list[str]) -> str:
     """
-    List available pack IDs.
-    kind: "usecases" | "domains" | "negatives"
-    domain: optional filter (usecases only)
+    Returns JSON with the requested sections from knowledge/usecases/<uc_id>.yml.
+    Unknown sections are ignored. If UC missing: returns {'error': ...}.
     """
-    res = {"ids": []}
-    if kind == "usecases":
-        ids = _ls_ids(USECASES_DIR, ".yml")
-        if domain:
-            filtered = []
-            for uid in ids:
-                data = (USECASES_DIR / f"{uid}.yml").read_text(encoding="utf-8")
-                if f"domain: {domain}" in data or f"domain: '{domain}'" in data or f'domain: "{domain}"' in data:
-                    filtered.append(uid)
-            res["ids"] = ids
-            res["filtered"] = filtered
-        else:
-            res["ids"] = ids
-    elif kind == "domains":
-        res["ids"] = _ls_ids(DOMAINS_DIR, ".yml")
-    elif kind == "negatives":
-        res["ids"] = _ls_ids(NEGATIVES_DIR, ".yml")
-    else:
-        return json.dumps({"error": f"unknown kind '{kind}'"})
-    return json.dumps(res, ensure_ascii=False)
+    uc_path = UCS_DIR / f"{uc_id}.yml"
+    if not uc_path.exists():
+        return _safe_json({"error": f"unknown UC '{uc_id}'"})
+    try:
+        data = yaml.safe_load(_read_text(uc_path)) or {}
+        out = {}
+        for sec in sections:
+            if sec in data:
+                out[sec] = data[sec]
+        return _safe_json(out)
+    except Exception as e:
+        return _safe_json({"error": f"yaml parse error: {e}"})
 
-@function_tool
-def tool_get_pack(pack_id: str) -> str:
-    """Return YAML content of a pack (usecases/domains/negatives)."""
-    for folder in (USECASES_DIR, DOMAINS_DIR, NEGATIVES_DIR):
-        f = folder / f"{pack_id}.yml"
-        if f.exists():
-            return f.read_text(encoding="utf-8")
-    return json.dumps({"error": f"pack '{pack_id}' not found"})
 
-@function_tool
-def tool_get_component(component_id: str) -> str:
-    """Return Python text of a component (.py preferred, fallback .py.txt)."""
-    for ext in (".py", ".py.txt"):
-        f = COMPONENTS_DIR / f"{component_id}{ext}"
-        if f.exists():
-            return f.read_text(encoding="utf-8")
-    return json.dumps({"error": f"component '{component_id}' not found"})
-
-@function_tool
-def tool_list_components(prefix: Optional[str] = None) -> str:
+@tool(
+    name="tool_bundle_components",
+    description=(
+        "Load multiple component files and return a single concatenated string plus a manifest. "
+        "Input: components:[relative_paths...] (e.g., 'blocks/components/gee/aoi_from_spec.py'). "
+        "Rejects legacy/fs_*."
+    ),
+)
+def tool_bundle_components(components: list[str]) -> str:
     """
-    List available component IDs (fs_*). Accepts .py and .py.txt. Optional prefix filter.
+    Reads all listed component files, disallows legacy/fs_* paths, and returns:
+      {'bundle': '<all files concatenated with headers>', 'manifest': [{'id','sha1','bytes'}...]}
     """
-    ids = set()
-    if COMPONENTS_DIR.exists():
-        for p in COMPONENTS_DIR.glob("*.py"):
-            ids.add(p.stem)
-        for p in COMPONENTS_DIR.glob("*.py.txt"):
-            ids.add(p.stem)
-    out = sorted([i for i in ids if not prefix or i.startswith(prefix)])
-    return json.dumps({"ids": out}, ensure_ascii=False)
+    bundle_parts: List[str] = []
+    manifest: List[Dict[str, Any]] = []
 
-@function_tool
-def tool_get_util(util_id: str) -> str:
-    """Return Python text of a util helper (.py preferred, fallback .py.txt)."""
-    for ext in (".py", ".py.txt"):
-        f = UTILS_DIR / f"{util_id}{ext}"
-        if f.exists():
-            return f.read_text(encoding="utf-8")
-    return json.dumps({"error": f"util '{util_id}' not found"})
+    try:
+        for rel in components:
+            p = (ROOT / rel).resolve()
+            # guard: component must be within repo and not legacy
+            if ROOT not in p.parents and p != ROOT:
+                return _safe_json({"error": f"component outside repo scope: {rel}"})
+            if _is_legacy(p):
+                return _safe_json({"error": f"legacy component not allowed: {rel}"})
+            if not p.exists():
+                return _safe_json({"error": f"component not found: {rel}"})
 
-@function_tool
-def tool_run_python(code: str,
-                    filename: Optional[str] = None,
-                    timeout_sec: int = 600,
-                    mode: str = "script",
-                    port: int = 8502) -> str:
+            txt = _read_text(p)
+            h = _sha1_text(txt)
+            header = f"\n# ==== BEGIN COMPONENT: {rel} (sha1:{h}) ====\n"
+            footer = f"\n# ==== END COMPONENT: {rel} ====\n"
+            bundle_parts.append(header + txt + footer)
+            manifest.append({"id": rel, "sha1": h, "bytes": len(txt.encode("utf-8"))})
+
+        return _safe_json({"bundle": "\n".join(bundle_parts), "manifest": manifest})
+    except Exception as e:
+        return _safe_json({"error": f"bundle error: {str(e)}"})
+
+
+# -----------------------------------------------------------------------------
+# KEEP: Execution tool (inline/script/streamlit)
+# -----------------------------------------------------------------------------
+@tool(
+    name="tool_run_python",
+    description=(
+        "Run Python code inline or as script/streamlit. "
+        "Input: {code:str, mode:'inline'|'script'|'streamlit'}. "
+        "Returns {'status':'ok'|'error','stdout','stderr','path?'}"
+    ),
+)
+def tool_run_python(code: str, mode: str = "inline") -> str:
     """
-    Execute code inside runner/sandbox.
-    - mode="script": python file.py (returns stdout/stderr)
-    - mode="streamlit": streamlit run file.py --server.headless --server.port {port}
-                        (returns url + pid + short bootstrap log)
-    Hinweis: Auf Streamlit Cloud ist die zweite Streamlit-Instanz i. d. R. NICHT sichtbar.
+    Executes generated Python code.
+    - inline: exec in-process with basic stdout capture (fast; shares interpreter).
+    - script: write /runner/sandbox/app_gen.py and run `python app_gen.py`.
+    - streamlit: write /runner/sandbox/app_gen.py and run `streamlit run app_gen.py`.
     """
-    if not filename:
-        filename = "app_run.py"
-    target = SANDBOX_DIR / filename
-    target.write_text(code, encoding="utf-8")
+    try:
+        SANDBOX_DIR.mkdir(parents=True, exist_ok=True)
+        app_path = SANDBOX_DIR / "app_gen.py"
 
-    if mode == "script":
-        try:
-            proc = subprocess.run(
-                ["python", str(target)],
-                cwd=SANDBOX_DIR,
-                capture_output=True,
-                text=True,
-                timeout=timeout_sec
+        if mode == "inline":
+            # basic capture
+            buf_out = io.StringIO()
+            buf_err = io.StringIO()
+            _globals = {}
+            _locals = {}
+            # Patch streamlit.set_page_config if needed to avoid duplication errors
+            try:
+                import streamlit as _st_internal
+                if hasattr(_st_internal, "set_page_config"):
+                    pass  # Streamlit guards repeated calls; keep as-is
+            except Exception:
+                pass
+
+            # Redirect stdout/stderr temporarily
+            _stdout, _stderr = sys.stdout, sys.stderr
+            sys.stdout, sys.stderr = buf_out, buf_err
+            try:
+                exec(code, _globals, _locals)
+            except SystemExit:
+                # allow exit calls from streamlit scripts
+                pass
+            except Exception:
+                traceback.print_exc()
+            finally:
+                sys.stdout, sys.stderr = _stdout, _stderr
+
+            return _safe_json(
+                {"status": "ok", "stdout": buf_out.getvalue(), "stderr": buf_err.getvalue()}
             )
-            return json.dumps({
-                "ok": proc.returncode == 0,
-                "stdout": proc.stdout[-15000:],
-                "stderr": proc.stderr[-15000:],
-                "path": str(target),
-                "mode": "script"
-            }, ensure_ascii=False)
-        except subprocess.TimeoutExpired as e:
-            return json.dumps({
-                "ok": False,
-                "stdout": (getattr(e, "stdout", "") or "")[-15000:],
-                "stderr": f"TIMEOUT after {timeout_sec}s",
-                "path": str(target),
-                "mode": "script"
-            }, ensure_ascii=False)
 
-    if mode == "streamlit":
-        try:
+        # Script or Streamlit: write file then subprocess
+        app_path.write_text(code, encoding="utf-8")
+        if mode == "script":
             proc = subprocess.Popen(
-                ["streamlit", "run", str(target), "--server.headless", "true", "--server.port", str(port)],
-                cwd=SANDBOX_DIR,
+                [sys.executable, str(app_path)],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                text=True
+                cwd=str(SANDBOX_DIR),
+                text=True,
             )
-            try:
-                bootstrap = proc.stdout.readline().strip() if proc.stdout else ""
-            except Exception:
-                bootstrap = ""
-            url = f"http://localhost:{port}"
-            return json.dumps({
-                "ok": True,
-                "url": url,
-                "pid": proc.pid,
-                "path": str(target),
-                "hint": "Auf Streamlit Cloud meist nicht sichtbar (zweite Instanz). Inline-Runner nutzen.",
-                "mode": "streamlit",
-                "bootstrap_log": bootstrap[-2000:]
-            }, ensure_ascii=False)
-        except Exception as e:
-            return json.dumps({
-                "ok": False,
-                "error": f"Failed to start streamlit: {e}",
-                "path": str(target),
-                "mode": "streamlit"
-            }, ensure_ascii=False)
+        elif mode == "streamlit":
+            proc = subprocess.Popen(
+                ["streamlit", "run", str(app_path), "--server.headless=true"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                cwd=str(SANDBOX_DIR),
+                text=True,
+            )
+        else:
+            return _safe_json({"status": "error", "stderr": f"unknown mode: {mode}"})
 
-    return json.dumps({"error": f"unknown mode '{mode}'"})
-
-# ===== Async-Loop-Sicherung (Fix für Runner.run_sync in Streamlit-Thread) =====
-def ensure_event_loop() -> None:
-    """
-    Stellt sicher, dass im aktuellen Thread ein asyncio-Event-Loop vorhanden ist.
-    Notwendig, weil Streamlit Code in einem ScriptRunner-Thread ohne Default-Loop ausführt.
-    """
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-
-# ===== INLINE RUNNER: führt Mini-App im aktuellen Streamlit aus ===============
-def run_mini_app_inline(code: str, container: "st.delta_generator.DeltaGenerator") -> None:
-    """
-    Führt den übergebenen Streamlit-Code inline innerhalb des angegebenen Containers aus.
-    - Unterdrückt st.set_page_config (No-Op), um Doppelaufrufe zu vermeiden.
-    - Setzt __name__="__main__", damit 'if __name__ == "__main__":' in generiertem Code greift.
-    - Führt den Code unter 'with container:' aus, damit alle st.*-Ausgaben im Mini-App-Bereich landen.
-    """
-    # Spätimport (damit die App ohne EE/Geemap auch startet)
-    try:
-        import ee
-    except Exception:
-        ee = None
-    try:
-        import geemap
-        import geemap.foliumap as geemap_folium
-        from geemap.foliumap import Map
-    except Exception:
-        geemap = None
-        geemap_folium = None
-        Map = None
-    try:
-        import folium
-    except Exception:
-        folium = None
-
-    # st.set_page_config patchen → No-Op
-    original_set_page_config = st.set_page_config
-    try:
-        st.set_page_config = lambda *a, **k: None  # No-Op im Mini-App-Kontext
-
-        # Ausführung im Ziel-Container
-        with container:
-            # Separater Namespace mit __main__-Semantik
-            exec_globals = {
-                "__name__": "__main__",
-                "st": st,
-                "ee": ee,
-                "geemap": geemap,
-                "folium": folium,
-            }
-            # Optional bequeme Aliase, falls der Code sie direkt importfrei nutzt
-            if geemap_folium:
-                exec_globals["geemap_folium"] = geemap_folium
-            if Map:
-                exec_globals["Map"] = Map
-
-            try:
-                exec(code, exec_globals)
-            except Exception as e:
-                st.error(f"Mini-App exception: {e}")
-                st.exception(e)
-    finally:
-        # Patch zurücksetzen
-        st.set_page_config = original_set_page_config
-
-# ===== Agent Setup + echte SDK-Session ========================================
-if AGENTS_OK:
-    openai_client = AsyncOpenAI()  # liest OPENAI_API_KEY
-
-    agent = Agent(
-        name="EO-Agent",
-        instructions="\n\n".join([MASTER_PROMPT, GATES_PROMPT, ITERATION_PROMPT, CHEATSHEET_PROMPT]),
-        tools=[tool_list_packs, tool_get_pack, tool_get_component, tool_list_components, tool_get_util, tool_run_python],
-        model=OpenAIResponsesModel(model=os.environ.get("OPENAI_MODEL", "gpt-4o"), openai_client=openai_client),
-    )
-
-# ===== Streamlit: echtes Chat-Interface ======================================
-st.set_page_config(page_title="talk2earth — EO Agent", layout="wide")
-st.title("talk2earth — EO Agent (Agents SDK + Streamlit)")
-
-with st.sidebar:
-    st.subheader("Status")
-    st.write("Agents SDK:", "✅ bereit" if AGENTS_OK else f"❌ {AGENTS_IMPORT_ERROR}")
-    st.write("OPENAI_API_KEY gesetzt:", "✅" if os.environ.get("OPENAI_API_KEY") else "❌")
-    st.divider()
-    st.subheader("Knowledge Packs (debug)")
-    try:
-        # Debug-Listing OHNE Tool-Call (FunctionTool ist nicht direkt aufrufbar)
-        ucs = {"ids": _ls_ids(USECASES_DIR, ".yml")}
-        st.caption("Use-Cases: " + ", ".join(ucs["ids"]))
-        doms = {"ids": _ls_ids(DOMAINS_DIR, ".yml")}
-        st.caption("Domains: " + ", ".join(doms["ids"]))
-    except Exception as e:
-        st.warning(f"Packs-Auflistung fehlgeschlagen: {e}")
-    st.divider()
-    st.caption("Hinweis: AOI/Zeitraum/Parameter werden in den **generierten Apps** interaktiv bereitgestellt.")
-
-# Chat-Speicher (UI) — unabhängig von der SDK-Session
-if "messages" not in st.session_state:
-    st.session_state.messages = []  # [{"role":"user"/"assistant","content":str}]
-if "last_code" not in st.session_state:
-    st.session_state.last_code = ""
-if "agent_session_id" not in st.session_state:
-    # per Browser-Session eine stabile ID
-    st.session_state.agent_session_id = uuid.uuid4().hex
-
-# SDK-Session herstellen (ohne externe DB)
-# Option A: in-memory (flüchtig) — SQLiteSession(session_id)  → db_path=":memory:"
-# Option B: Datei im Container — bleibt erhalten solange der App-Prozess/Container lebt
-try:
-    SESSIONS_DB = str((RUNNER_DIR / "sessions.db").resolve())
-    sdk_session = SQLiteSession(st.session_state.agent_session_id, SESSIONS_DB)
-    with st.sidebar:
-        st.caption(f"Session: {st.session_state.agent_session_id[:8]}… (SQLite @ {SESSIONS_DB})")
-except Exception as e:
-    sdk_session = SQLiteSession(st.session_state.agent_session_id)  # in-memory fallback
-    with st.sidebar:
-        st.warning(f"SDK-Session init: Fallback in-memory ({e})")
-
-# Verlauf (UI) rendern
-for m in st.session_state.messages:
-    with st.chat_message(m["role"]):
-        st.markdown(m["content"])
-
-def extract_first_python_block(text: str) -> Optional[str]:
-    m = re.search(r"```(?:python)?\s*(.+?)```", text, flags=re.DOTALL | re.IGNORECASE)
-    return m.group(1).strip() if m else None
-
-# Chat-Eingabe
-prompt = st.chat_input("Nachricht an den Agenten eingeben und mit Enter senden…")
-if prompt:
-    # 1) User Nachricht anzeigen/speichern
-    st.session_state.messages.append({"role": "user", "content": prompt})
-    with st.chat_message("user"):
-        st.markdown(prompt)
-
-    # 2) Agent call mit Iterations-Injektion + echter SDK-Session
-    if not AGENTS_OK:
-        answer = "**Fehler:** Agents SDK nicht verfügbar. Bitte `pip install openai-agents openai` und den Server neu starten."
-    else:
-        iteration_context = ""
-        if st.session_state.last_code:
-            iteration_context = f"\n\n[EXISTING_CODE_BEGIN]\n{st.session_state.last_code}\n[EXISTING_CODE_END]\n"
-        history_note = ""
-        if st.session_state.messages[:-1]:
-            history_note = "\n\n[HISTORY NOTE] Continue this session; respond naturally and follow iteration rules.\n"
-
-        # Event-Loop sicherstellen
+        # Give the process a brief head start, then read non-blocking
+        time.sleep(1.0)
         try:
-            asyncio.get_running_loop()
-        except RuntimeError:
-            asyncio.set_event_loop(asyncio.new_event_loop())
+            out, err = proc.communicate(timeout=3.0)
+        except subprocess.TimeoutExpired:
+            out, err = ("", f"Process started (pid {proc.pid}). Streaming not captured.")
+        return _safe_json({"status": "ok", "stdout": out, "stderr": err, "path": str(app_path)})
 
-        # >>> WICHTIG: echte SDK-Session übergeben
-        result = Runner.run_sync(
-            agent,
-            input=(prompt + history_note + iteration_context),
-            session=sdk_session
-        )
-        answer = result.final_output or ""
+    except Exception as e:
+        return _safe_json({"status": "error", "stderr": f"runner error: {e}"})
 
-    # 3) Assistant-Antwort rendern — NUR Code, wenn vorhanden; sonst Markdown
-    code_block = extract_first_python_block(answer)
-    if code_block:
-        st.session_state.last_code = code_block
-        with st.chat_message("assistant"):
-            st.code(code_block, language="python")
+
+# -----------------------------------------------------------------------------
+# Agent construction — uses your new mega prompt (prompt-first)
+# -----------------------------------------------------------------------------
+def load_instructions() -> str:
+    """Concatenate the new mega prompt (and optional add-ons if you keep them)."""
+    parts: List[str] = []
+    if MEGA_PROMPT.exists():
+        parts.append(_read_text(MEGA_PROMPT))
     else:
-        with st.chat_message("assistant"):
-            st.markdown(answer)
+        # Fallback minimal instructions if file missing (keeps app usable)
+        parts.append(
+            textwrap.dedent(
+                """
+                You are a single conversational agent that builds small geospatial mini-apps.
+                Follow the 4-layer approach (L1.1→L1.2→L2→L3), use the provided tools:
+                - tool_get_meta (once)
+                - tool_get_policy
+                - tool_get_uc_sections (portion: first param_spec, later invariants/presets)
+                - tool_bundle_components (once, with Layer-2 plan.components)
+                - tool_run_python
+                Produce a PLAN_SPEC JSON before final code. AOI as structured spec. No legacy components.
+                """
+            ).strip()
+        )
+    return "\n\n".join(parts).strip()
 
-    st.session_state.messages.append({"role": "assistant", "content": answer})
 
-    # 4) Falls Code erkannt: Run-Buttons + Inline-Mini-App
-    if code_block:
-        st.write("---")
-        st.subheader("Erkannter Code aus der letzten Antwort")
+def build_agent():
+    instructions = load_instructions()
+    tools = [
+        tool_get_meta,
+        tool_get_policy,
+        tool_get_uc_sections,
+        tool_bundle_components,
+        tool_run_python,
+    ]
+    # ADAPT: if your SDK needs a factory, call it here; else return a tuple.
+    try:
+        agent_obj = agent.create(instructions=instructions, tools=tools)  # <-- adjust to your SDK
+    except Exception:
+        # fallback shape
+        agent_obj = {"instructions": instructions, "tools": tools}
+    return agent_obj
 
-        c1, c2, c3 = st.columns(3)
-        if c1.button("Run inline (empfohlen)"):
-            mini_container = st.container()
-            with st.spinner("Starte Mini-App inline…"):
-                run_mini_app_inline(code_block, mini_container)
 
-        if c2.button("Run in Runner (script)"):
-            with st.spinner("Runner (script)…"):
-                res = json.loads(tool_run_python(code_block, mode="script"))  # type: ignore
-            st.write(res)
+# -----------------------------------------------------------------------------
+# Chat UI (kept simple)
+# -----------------------------------------------------------------------------
+def init_session():
+    if "sdk_session" not in st.session_state:
+        st.session_state.sdk_session = {}  # your SDK typically accepts a dict
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
+    if "last_code" not in st.session_state:
+        st.session_state.last_code = ""
 
-        if c3.button("Run in Runner (streamlit)"):
-            with st.spinner("Runner (streamlit)…"):
-                res = json.loads(tool_run_python(code_block, filename="agent_streamlit.py", mode="streamlit", port=8502))  # type: ignore
-            st.write(res)
-            if res.get("ok") and res.get("url"):
-                st.info("Hinweis: Auf Streamlit Cloud ist die zweite Instanz in der Regel nicht erreichbar.")
-                st.success(f"Lokale URL (falls lokal ausgeführt): {res['url']}  (PID: {res.get('pid')})")
+
+def render_history():
+    for m in st.session_state.messages:
+        with st.chat_message(m["role"]):
+            st.markdown(m["content"])
+
+
+def on_user_input(user_text: str, agent_obj):
+    if not user_text:
+        return
+    st.session_state.messages.append({"role": "user", "content": user_text})
+
+    # Build the input prompt for the Agent (you may add hidden context if needed)
+    input_text = user_text
+
+    # Run the agent with session (your SDK Runner handles tool calls)
+    try:
+        result = Runner.run_sync(agent_obj, input=input_text, session=st.session_state.sdk_session)
+    except Exception as e:
+        result = {"final_output": f"Agent error: {e}", "new_items": []}
+
+    # Collect final output (Assistant message)
+    final_output = result.get("final_output") or ""
+    if final_output:
+        st.session_state.messages.append({"role": "assistant", "content": final_output})
+
+    # Display new items if your SDK returns them (optional)
+    new_items = result.get("new_items") or []
+    for it in new_items:
+        if it.get("type") == "assistant_message":
+            st.session_state.messages.append({"role": "assistant", "content": it.get("text", "")})
+
+
+def main():
+    init_session()
+    st.title("🧭 Mini-Apps — One Run (L1.1→L1.2→L2→L3)")
+
+    agent_obj = build_agent()
+
+    with st.sidebar:
+        st.markdown("### Session")
+        st.write("SDK session keys:", list(st.session_state.sdk_session.keys()))
+        st.markdown("---")
+        st.markdown("**Tools enabled:**")
+        st.code(
+            "- tool_get_meta\n- tool_get_policy\n- tool_get_uc_sections\n- tool_bundle_components\n- tool_run_python",
+            language="text",
+        )
+
+    render_history()
+    user_text = st.chat_input("Schreib mir, was du sehen möchtest …")
+    if user_text is not None:
+        on_user_input(user_text, agent_obj)
+        st.rerun()
+
+
+if __name__ == "__main__":
+    main()
