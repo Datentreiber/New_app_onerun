@@ -1,30 +1,31 @@
-# app.py — talk2earth (Agents SDK + Streamlit) — Chat-UI, Function Tools, Streamlit-Runner
+# app.py — talk2earth (Agents SDK + Streamlit) — Chat-UI, neue Tools, persistente SDK-Session
 from __future__ import annotations
 
 import os
 import re
 import json
+import uuid
+import hashlib
 import pathlib
 import subprocess
-import hashlib
 from typing import Optional, List, Dict, Any
 
 import streamlit as st
-import asyncio  # für Event-Loop-Fix
+import asyncio  # Event-Loop-Fix für Streamlit-Thread
 
 BASE_DIR = pathlib.Path(__file__).parent.resolve()
 
 # ===== Agents SDK korrekt importieren =========================================
 AGENTS_OK = True
 try:
-    from agents import Agent, Runner, function_tool
+    from agents import Agent, Runner, function_tool, SQLiteSession
     from agents.models.openai_responses import OpenAIResponsesModel
     from openai import AsyncOpenAI
 except Exception as e:
     AGENTS_OK = False
     AGENTS_IMPORT_ERROR = str(e)
 
-# ===== Pfade / Repo-Layout (neu konsolidiert) =================================
+# ===== Pfade / Repo-Layout ====================================================
 KNOWLEDGE_DIR = BASE_DIR / "knowledge"
 PROMPTS_DIR = KNOWLEDGE_DIR / "prompts"
 META_INDEX_PATH = KNOWLEDGE_DIR / "meta" / "layer1_index.yml"   # L1.1 (Alltagssprache)
@@ -39,7 +40,7 @@ RUNNER_DIR = BASE_DIR / "runner"
 SANDBOX_DIR = RUNNER_DIR / "sandbox"
 SANDBOX_DIR.mkdir(parents=True, exist_ok=True)
 
-# ===== Prompt laden (NEU: nur mega_prompt.md) =================================
+# ===== Prompt laden (NEU: mega_prompt.md) ====================================
 def load_text_file(path: pathlib.Path, fallback: str = "") -> str:
     try:
         return path.read_text(encoding="utf-8")
@@ -77,8 +78,7 @@ def _ls_usecase_ids() -> List[str]:
         return []
     return sorted([p.stem for p in USECASES_DIR.glob("*.yml")])
 
-# ===== Neue Function Tools (prompt-first, keine alten Pack-Tools) =============
-
+# ===== Neue Function Tools (Layer 1.1 → 1.2 → 2 → 3) =========================
 @function_tool
 def tool_get_meta() -> str:
     """
@@ -176,6 +176,7 @@ def tool_run_python(code: str,
     - mode="script": python file.py (returns stdout/stderr)
     - mode="streamlit": streamlit run file.py --server.headless --server.port {port}
                         (returns url + pid + short bootstrap log)
+    Hinweis: Auf Streamlit Cloud ist die zweite Streamlit-Instanz i. d. R. NICHT sichtbar.
     """
     if not filename:
         filename = "app_run.py"
@@ -201,7 +202,7 @@ def tool_run_python(code: str,
         except subprocess.TimeoutExpired as e:
             return json.dumps({
                 "ok": False,
-                "stdout": (e.stdout or "")[-15000:],
+                "stdout": (getattr(e, "stdout", "") or "")[-15000:],
                 "stderr": f"TIMEOUT after {timeout_sec}s",
                 "path": str(target),
                 "mode": "script"
@@ -216,7 +217,6 @@ def tool_run_python(code: str,
                 stderr=subprocess.PIPE,
                 text=True
             )
-            # kleine Wartezeit: eine Zeile lesen (nicht blockieren)
             try:
                 bootstrap = proc.stdout.readline().strip() if proc.stdout else ""
             except Exception:
@@ -227,7 +227,7 @@ def tool_run_python(code: str,
                 "url": url,
                 "pid": proc.pid,
                 "path": str(target),
-                "hint": "Öffne die URL im Browser. Beende den Prozess bei Bedarf manuell.",
+                "hint": "Auf Streamlit Cloud meist nicht sichtbar (zweite Instanz).",
                 "mode": "streamlit",
                 "bootstrap_log": bootstrap[-2000:]
             }, ensure_ascii=False)
@@ -253,7 +253,7 @@ def ensure_event_loop() -> None:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
 
-# ===== Agent Setup ============================================================
+# ===== Agent Setup + echte SDK-Session ========================================
 if AGENTS_OK:
     openai_client = AsyncOpenAI()  # liest OPENAI_API_KEY
     agent = Agent(
@@ -283,13 +283,30 @@ with st.sidebar:
     st.divider()
     st.caption("Hinweis: AOI/Zeitraum/Parameter werden im Dialog geklärt; der Agent bündelt Komponenten vor dem Code.")
 
-# Chat-Speicher
+# Chat-Speicher (UI) — unabhängig von der SDK-Session
 if "messages" not in st.session_state:
     st.session_state.messages = []  # [{"role":"user"/"assistant","content":str}]
 if "last_code" not in st.session_state:
     st.session_state.last_code = ""
+if "agent_session_id" not in st.session_state:
+    # stabile ID pro Browser-Session
+    st.session_state.agent_session_id = uuid.uuid4().hex
 
-# Verlauf rendern
+# SDK-Session herstellen (persistentes Gedächtnis via SQLite)
+if AGENTS_OK:
+    try:
+        SESSIONS_DB = str((RUNNER_DIR / "sessions.db").resolve())
+        sdk_session = SQLiteSession(st.session_state.agent_session_id, SESSIONS_DB)
+        with st.sidebar:
+            st.caption(f"Session: {st.session_state.agent_session_id[:8]}… (SQLite @ {SESSIONS_DB})")
+    except Exception as e:
+        sdk_session = SQLiteSession(st.session_state.agent_session_id)  # in-memory fallback
+        with st.sidebar:
+            st.warning(f"SDK-Session init: Fallback in-memory ({e})")
+else:
+    sdk_session = None  # type: ignore
+
+# Verlauf (UI) rendern
 for m in st.session_state.messages:
     with st.chat_message(m["role"]):
         st.markdown(m["content"])
@@ -298,7 +315,7 @@ def extract_first_python_block(text: str) -> Optional[str]:
     m = re.search(r"```(?:python)?\s*(.+?)```", text, flags=re.DOTALL | re.IGNORECASE)
     return m.group(1).strip() if m else None
 
-# Chat-Eingabe (richtiger „Senden“-Flow)
+# Chat-Eingabe
 prompt = st.chat_input("Nachricht an den Agenten eingeben und mit Enter senden…")
 if prompt:
     # 1) User Nachricht anzeigen/speichern
@@ -306,7 +323,7 @@ if prompt:
     with st.chat_message("user"):
         st.markdown(prompt)
 
-    # 2) Agent call (mit optionaler Iterations-Injektion)
+    # 2) Agent call mit Iterations-Injektion + echter SDK-Session
     if not AGENTS_OK:
         answer = "**Fehler:** Agents SDK nicht verfügbar. Bitte SDK installieren/konfigurieren und Server neu starten."
     else:
@@ -317,19 +334,23 @@ if prompt:
         if st.session_state.messages[:-1]:
             history_note = "\n\n[HISTORY NOTE] Continue this session; respond naturally and follow iteration rules.\n"
 
-        # Sicherstellen, dass ein Event-Loop existiert (Streamlit-Thread)
+        # Event-Loop sicherstellen
         ensure_event_loop()
 
-        result = Runner.run_sync(agent, input=(prompt + history_note + iteration_context))
+        # >>> Persistente SDK-Session übergeben (SQLiteSession)
+        result = Runner.run_sync(
+            agent,
+            input=(prompt + history_note + iteration_context),
+            session=sdk_session  # type: ignore
+        )
         answer = result.final_output or ""
 
-    # 3) Assistant Nachricht rendern
+    # 3) Assistant-Antwort rendern — Markdown anzeigen
     with st.chat_message("assistant"):
         st.markdown(answer)
-
     st.session_state.messages.append({"role": "assistant", "content": answer})
 
-    # 4) Falls Code dabei: extrahieren und separat anzeigen + Run-Buttons einblenden
+    # 4) Optional: Code-Block extrahieren & Buttons anbieten
     code_block = extract_first_python_block(answer)
     if code_block:
         st.session_state.last_code = code_block
@@ -346,4 +367,5 @@ if prompt:
                 res = json.loads(tool_run_python(code_block, filename="agent_streamlit.py", mode="streamlit", port=8502))  # type: ignore
             st.write(res)
             if res.get("ok") and res.get("url"):
-                st.success(f"App läuft: {res['url']}  (PID: {res.get('pid')})")
+                st.info("Hinweis: Auf Streamlit Cloud ist die zweite Instanz in der Regel nicht erreichbar.")
+                st.success(f"Lokale URL (falls lokal ausgeführt): {res['url']}  (PID: {res.get('pid')})")
