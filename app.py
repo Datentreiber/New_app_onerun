@@ -377,3 +377,60 @@ if prompt:
                 st.info("Hinweis: Auf Streamlit Cloud ist die zweite Instanz in der Regel nicht erreichbar.")
                 st.success(f"Lokale URL (falls lokal ausgeführt): {res['url']}  (PID: {res.get('pid')})")
 
+# === Runner-Panel: In-Process-Ausführung des generierten Codes =================
+import sys
+import traceback
+import types
+import streamlit as st
+
+# Stelle sicher, dass das Repo-Root im sys.path ist (damit imports wie blocks.components... aufgelöst werden)
+if "" not in sys.path and "." not in sys.path:
+    sys.path.insert(0, "")
+
+if "runner_results" not in st.session_state:
+    st.session_state["runner_results"] = {}
+
+# Das Panel soll IMMER sichtbar sein, sobald last_code existiert/gesetzt wurde
+code_str = st.session_state.get("last_code", "")
+
+if code_str:
+    st.write("---")
+    st.subheader("Runner (In-Process)")
+
+    # Zeig den (finalen) Code
+    st.code(code_str, language="python")
+
+    def run_generated_code_verbatim(code: str):
+        """
+        Führt den gegebenen Python-Code-String im GLEICHEN Prozess aus.
+        Der Code darf top-level Streamlit-Aufrufe enthalten (st.title, Columns, Maps, ...).
+        Wichtig: imports wie 'from blocks.components.util.scaffold import ee_authenticate' funktionieren,
+        weil sys.path auf Repo-Root zeigt.
+        """
+        # Wir geben dem Snippet einen sauberen, aber echten Namespace.
+        # Wichtig: KEIN Proxy – 'import streamlit as st' im Snippet bindet auf echtes streamlit.
+        ns: dict[str, object] = {
+            "__name__": "__generated__",
+        }
+        try:
+            compiled = compile(code, filename="<generated>", mode="exec")
+            exec(compiled, ns, ns)
+            return {"ok": True}
+        except Exception as e:
+            return {"ok": False, "error": str(e), "traceback": traceback.format_exc()}
+
+    # Persistenter Button (verschwindet nicht nach Rerun, Ergebnisse bleiben sichtbar)
+    if st.button("🚀 Run in runner (in-process)", key="runner_inproc"):
+        with st.spinner("Executing generated code in-process…"):
+            res = run_generated_code_verbatim(code_str)
+        st.session_state["runner_results"]["inproc"] = res
+
+    # Ergebnisse/Fehler anzeigen (persistiert über Reruns)
+    res = st.session_state["runner_results"].get("inproc")
+    if res:
+        with st.expander("Ergebnis / Logs", expanded=not res.get("ok", False)):
+            st.json(res)
+            if not res.get("ok", False) and res.get("traceback"):
+                st.error(res["traceback"])
+# === Ende Runner-Panel ========================================================
+
