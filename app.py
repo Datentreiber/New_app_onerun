@@ -14,7 +14,8 @@ import streamlit as st
 import asyncio  # Event-Loop-Fix für Streamlit-Thread
 # ... existing imports ...
 import os
-
+from blocks.components.util.scaffold import ee_authenticate
+ee_authenticate()
 
 # --- Agent run limits (configurable via env var) ---
 DEFAULT_MAX_TURNS = int(os.getenv("AGENT_MAX_TURNS", "100"))  # raise from SDK default (~12)
@@ -851,4 +852,5 @@ if code_str:
             st.json(st.session_state["runner_results"]["inproc"])
             st.error(st.session_state["runner_results"]["inproc"]["traceback"])
 # === Ende Runner-Panel ========================================================
+
 
