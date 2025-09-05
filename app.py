@@ -87,6 +87,22 @@ def extract_first_python_block(text: str) -> Optional[str]:
     m = re.search(r"```(?:python)?\s*(.+?)```", text, flags=re.DOTALL | re.IGNORECASE)
     return m.group(1).strip() if m else None
 
+# ---- NEU: Helper: Vorschläge rendern (Layer 1) -------------------------------
+def render_l1_suggestions() -> Optional[Dict[str, Any]]:
+    """Zeigt Layer-1-Vorschläge als Buttons; Rückgabe = gewählter Vorschlag oder None."""
+    suggs = st.session_state.get("l1_suggestions") or []
+    if not suggs:
+        return None
+    st.subheader("Vorschläge")
+    cols = st.columns(min(3, len(suggs)))
+    chosen = None
+    for i, s in enumerate(suggs):
+        label = s.get("label", f"Option {i+1}")
+        with cols[i % len(cols)]:
+            if st.button(label, key=f"sugg_{s.get('id', i)}"):
+                chosen = s
+    return chosen
+
 # ---- NEU: PLAN_SPEC abfangen & aus UI entfernen ------------------------------
 PLAN_SPEC_KEY_CANDIDATES = ("use_case", "aoi_spec", "render", "components")
 
@@ -308,6 +324,34 @@ def tool_run_python(code: str,
 
     return json.dumps({"error": f"unknown mode '{mode}'"})
 
+# ===== NEU: UI-Vorschläge (Layer 1) ==========================================
+@function_tool
+def ui_suggest(suggestions: List[Dict[str, Any]], replace: bool = False) -> str:
+    """
+    Der Agent ruft dies früh in Layer 1 auf.
+    Erwartet eine Liste von Objekten: {id:str, label:str, payload:dict}.
+    Schreibt Vorschläge in st.session_state["l1_suggestions"].
+    """
+    if replace or "l1_suggestions" not in st.session_state:
+        st.session_state["l1_suggestions"] = []
+
+    normalized: List[Dict[str, Any]] = []
+    for s in suggestions or []:
+        if not isinstance(s, dict):
+            continue
+        sid = str(s.get("id") or "")
+        label = str(s.get("label") or "").strip()
+        payload = s.get("payload")
+        if not sid or not label or not isinstance(payload, dict):
+            continue
+        # Duplikate (per id) vermeiden
+        if any(x.get("id") == sid for x in st.session_state["l1_suggestions"]):
+            continue
+        normalized.append({"id": sid, "label": label, "payload": payload})
+
+    st.session_state["l1_suggestions"].extend(normalized)
+    return json.dumps({"received": len(normalized)}, ensure_ascii=False)
+
 # ===== Async-Loop-Sicherung (Fix für Runner.run_sync in Streamlit-Thread) =====
 def ensure_event_loop() -> None:
     """
@@ -326,7 +370,8 @@ if AGENTS_OK:
     agent = Agent(
         name="EO-Agent",
         instructions=MEGA_PROMPT,
-        tools=[tool_get_meta, tool_get_policy, tool_get_uc_sections, tool_bundle_components, tool_run_python],
+        tools=[ui_suggest,  # <--- NEU
+               tool_get_meta, tool_get_policy, tool_get_uc_sections, tool_bundle_components, tool_run_python],
         model=OpenAIResponsesModel(model=os.environ.get("OPENAI_MODEL", "gpt-4o"), openai_client=openai_client),
         # Hinweis: Structured Outputs (plan_spec/python_code) werden unten robust abgegriffen,
         # selbst wenn das Modell sie in den Text schreibt.
@@ -371,6 +416,13 @@ if "last_plan_spec" not in st.session_state:
     st.session_state.last_plan_spec = None
 if "last_plan_spec_raw" not in st.session_state:
     st.session_state.last_plan_spec_raw = ""
+# --- NEU: Vorschlags-UI (Layer 1) ---
+if "l1_suggestions" not in st.session_state:
+    st.session_state["l1_suggestions"] = []          # wird vom Tool gefüllt
+if "queued_input" not in st.session_state:
+    st.session_state["queued_input"] = None          # nächste "synthetische" User-Eingabe
+if "queued_label" not in st.session_state:
+    st.session_state["queued_label"] = None          # Anzeige-Label für die Auswahl
 
 # SDK-Session herstellen (persistentes Gedächtnis via SQLite)
 if AGENTS_OK:
@@ -391,13 +443,32 @@ for m in st.session_state.messages:
     with st.chat_message(m["role"]):
         st.markdown(m["content"])
 
-# Chat-Eingabe
-prompt = st.chat_input("Nachricht an den Agenten eingeben und mit Enter senden…")
+# ---- NEU: Vorschläge-Block (immer sichtbar, vor der Chat-Eingabe) -----------
+chosen = render_l1_suggestions()
+if chosen:
+    # Klick wird zur nächsten User-Eingabe umgewandelt
+    st.session_state["queued_input"] = "USE_SUGGESTION " + json.dumps(chosen.get("payload", {}), ensure_ascii=False)
+    st.session_state["queued_label"] = chosen.get("label")
+    st.rerun()
+
+# ---- NEU: Chat-Eingabe (Queue zuerst, dann normales Eingabefeld) ------------
+queued = st.session_state.pop("queued_input", None)
+queued_label = st.session_state.pop("queued_label", None)
+
+prompt = None
+if queued:
+    prompt = queued
+else:
+    prompt = st.chat_input("Nachricht an den Agenten eingeben und mit Enter senden…")
+
 if prompt:
     # 1) User Nachricht anzeigen/speichern
-    st.session_state.messages.append({"role": "user", "content": prompt})
+    display_text = prompt
+    if prompt.startswith("USE_SUGGESTION ") and queued_label:
+        display_text = f"[Auswahl] {queued_label}"
+    st.session_state.messages.append({"role": "user", "content": display_text})
     with st.chat_message("user"):
-        st.markdown(prompt)
+        st.markdown(display_text)
 
     # 2) Agent call mit Iterations-Injektion + echter SDK-Session
     if not AGENTS_OK:
@@ -414,6 +485,9 @@ if prompt:
 
         # Event-Loop sicherstellen
         ensure_event_loop()
+
+        # Alte Vorschläge ausblenden – neue wird das Tool setzen
+        st.session_state["l1_suggestions"] = []
 
         # >>> Persistente SDK-Session übergeben (SQLiteSession)
         result = Runner.run_sync(
