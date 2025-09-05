@@ -79,18 +79,14 @@ def _place_to_geometry(name: str) -> ee.Geometry:
     """
     Erzeuge Geometrie aus einem "place"-Namen.
     Reihenfolge:
-      1) Versuch: GAUL Admin-Grenze Level 1 (z. B. 'Berlin, Germany').
-      2) Fallback: geemap.geocode(name) – verträgt Nominatim-Dicts ODER ArcGIS-Objekte.
-
-    Unterstützte Rückgaben:
-      - Nominatim: List[dict] mit keys 'boundingbox' und/oder 'lat'/'lon'
-      - ArcGIS (geocoder.arcgis): Objekt mit .bbox (W,S,E,N) und/oder .latlng (lat, lon) oder .json
+      1) GAUL Admin-Grenze Level 1 (z. B. 'Berlin, Germany').
+      2) Fallback: geemap.geocode(name) – funktioniert mit Nominatim-Dicts ODER ArcGIS-Objekten.
     """
     if not isinstance(name, str) or not name.strip():
         raise ValueError("place.name must be a non-empty string.")
     place = name.strip()
 
-    # 1) Admin-Grenze (GAUL Level 1): '<Region>, <Country>' → exakte Verwaltungseinheit
+    # 1) Admin-Grenze (GAUL L1): '<Region>, <Country>'
     try:
         parts = [p.strip() for p in place.split(",")]
         if len(parts) >= 2:
@@ -101,18 +97,14 @@ def _place_to_geometry(name: str) -> ee.Geometry:
                 ee.Filter.eq("ADM1_NAME", region),
                 ee.Filter.eq("ADM0_NAME", country)
             ))
-            # .first() kann None sein → in try/except abfangen
             candidate = fc.first()
-            # Wenn keine Features, wirft geometry() unten
             geom = ee.Feature(candidate).geometry()
-            # Sicherstellen, dass die Geometrie sich bilden lässt (bounds abfragen)
-            _ = geom.bounds()
+            _ = geom.bounds()  # Validierung
             return geom
     except Exception:
-        # stiller Fallback auf Geocoding
-        pass
+        pass  # Fallback auf Geocoding
 
-    # 2) Geocoding via geemap (Provider-agnostisch)
+    # 2) Geocoding via geemap (provider-agnostisch)
     try:
         results = geemap.geocode(place)
     except Exception as ge:
@@ -129,10 +121,8 @@ def _place_to_geometry(name: str) -> ee.Geometry:
         lat = best.get("lat")
         lon = best.get("lon")
         if bbox and len(bbox) == 4:
-            # Nominatim: [south, north, west, east]
-            south, north, west, east = map(float, bbox)
-            _validate_lonlat(west, south)
-            _validate_lonlat(east, north)
+            south, north, west, east = map(float, bbox)  # [S, N, W, E]
+            _validate_lonlat(west, south); _validate_lonlat(east, north)
             if west < east and south < north:
                 return ee.Geometry.Rectangle([west, south, east, north])
         if lat is not None and lon is not None:
@@ -141,65 +131,53 @@ def _place_to_geometry(name: str) -> ee.Geometry:
             return ee.Geometry.Point([lon_f, lat_f])
         raise ValueError(f"Geocoding (Nominatim) result for '{place}' lacks usable geometry.")
 
-    # 2b) ArcGIS: Objekt mit häufig .bbox (W,S,E,N) und/oder .latlng (lat, lon) oder .json
+    # 2b) ArcGIS: Objekt mit .bbox (W,S,E,N), .latlng (lat, lon) oder .json
     try:
-        # bbox: erwartete Reihenfolge (W, S, E, N)
         bbox_attr = getattr(best, "bbox", None)
         if bbox_attr and len(bbox_attr) == 4:
             west, south, east, north = map(float, bbox_attr)
-            _validate_lonlat(west, south)
-            _validate_lonlat(east, north)
+            _validate_lonlat(west, south); _validate_lonlat(east, north)
             if west < east and south < north:
                 return ee.Geometry.Rectangle([west, south, east, north])
 
-        # latlng: erwartete Reihenfolge (lat, lon)
         latlng_attr = getattr(best, "latlng", None)
         if latlng_attr and len(latlng_attr) == 2:
             lat, lon = float(latlng_attr[0]), float(latlng_attr[1])
             _validate_lonlat(lon, lat)
             return ee.Geometry.Point([lon, lat])
 
-        # json: versuchen, bbox/extent zu lesen
         json_attr = getattr(best, "json", None)
         if isinstance(json_attr, dict):
-            # einige Implementierungen haben 'bbox' oder 'bounds'
             jbbox = json_attr.get("bbox") or json_attr.get("bounds")
             if jbbox and len(jbbox) == 4:
                 west, south, east, north = map(float, jbbox)
-                _validate_lonlat(west, south)
-                _validate_lonlat(east, north)
+                _validate_lonlat(west, south); _validate_lonlat(east, north)
                 if west < east and south < north:
                     return ee.Geometry.Rectangle([west, south, east, north])
-            # extent-Objekt
             extent = json_attr.get("extent") or json_attr.get("Extents")
             if isinstance(extent, dict):
-                xmin = float(extent.get("xmin"))
-                ymin = float(extent.get("ymin"))
-                xmax = float(extent.get("xmax"))
-                ymax = float(extent.get("ymax"))
-                _validate_lonlat(xmin, ymin)
-                _validate_lonlat(xmax, ymax)
+                xmin = float(extent.get("xmin")); ymin = float(extent.get("ymin"))
+                xmax = float(extent.get("xmax")); ymax = float(extent.get("ymax"))
+                _validate_lonlat(xmin, ymin); _validate_lonlat(xmax, ymax)
                 if xmin < xmax and ymin < ymax:
                     return ee.Geometry.Rectangle([xmin, ymin, xmax, ymax])
 
-        # location: (x,y) / (lon,lat)
         loc = getattr(best, "location", None)
         if isinstance(loc, dict) and "x" in loc and "y" in loc:
             lon, lat = float(loc["x"]), float(loc["y"])
             _validate_lonlat(lon, lat)
             return ee.Geometry.Point([lon, lat])
 
-        # fallback: separate attributes x,y
         if hasattr(best, "x") and hasattr(best, "y"):
             lon, lat = float(getattr(best, "x")), float(getattr(best, "y"))
             _validate_lonlat(lon, lat)
             return ee.Geometry.Point([lon, lat])
 
     except Exception:
-        # falls irgendein Access fehlschlägt, am Ende allgemeine Fehlermeldung
         pass
 
     raise ValueError(f"Geocoding (ArcGIS) result for '{place}' lacks usable geometry.")
+
 
 
 def aoi_from_spec(spec: Dict[str, Any]) -> ee.Geometry:
