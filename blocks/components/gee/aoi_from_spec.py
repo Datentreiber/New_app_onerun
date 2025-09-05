@@ -79,7 +79,7 @@ def _place_to_geometry(name: str) -> ee.Geometry:
     if not isinstance(name, str) or not name.strip():
         raise ValueError("place.name must be a non-empty string.")
     try:
-        results = geemap.geocode(name.strip())
+        results = geemap.geocode(name.strip(), provider="nominatim")
     except Exception as ge:
         raise ValueError(f"Geocoding failed for '{name}': {ge}") from ge
     if not results or not isinstance(results, list):
