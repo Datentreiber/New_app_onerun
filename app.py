@@ -9,6 +9,7 @@ import hashlib
 import pathlib
 import subprocess
 from typing import Optional, List, Dict, Any, Tuple, TypedDict  # <-- NEU: TypedDict
+from pydantic import BaseModel  # <-- NEU: strukturiertes Output-Schema
 
 import streamlit as st
 import asyncio  # Event-Loop-Fix für Streamlit-Thread
@@ -331,6 +332,10 @@ class UISuggestion(TypedDict):
     id: str            # stabiler Key (snake_case)
     label: str         # Button-Text (max ~50 Zeichen)
     payload_json: str  # JSON-kodierter Payload (wir parsen ihn serverseitig)
+
+# ---- NEU (LLM-first): strukturiertes Output-Schema nur für Python-Code ----
+class PythonBlockOutput(BaseModel):
+    code: str  # kompletter, lauffähiger Python-Quelltext (ohne Erklärtext)
 
 @function_tool
 def ui_suggest(suggestions: List[UISuggestion], replace: bool = False) -> str:
@@ -754,6 +759,8 @@ def _sh_get_fixer_agent():
             openai_client=openai_client,  # reuse same OpenAI client as main agent
         ),
         instructions=_SH_FIXER_PROMPT,
+        tools=[tool_get_meta, tool_get_policy, tool_get_uc_sections, tool_bundle_components],  # <-- NEU: gleiche Tools
+        output_type=PythonBlockOutput,  # <-- NEU: strukturiert, nur Code
     )
     st.session_state["_fixer_agent"] = fixer_agent
     return fixer_agent
@@ -784,9 +791,14 @@ def _sh_fix_code_once(code_text: str, error_log: str) -> _sh_Optional[str]:
             session=sdk_session,
             max_turns=DEFAULT_MAX_TURNS,
         )
-        fixed_raw = getattr(res, "final_output", None)
-        fixed = _sh_extract_code_block_or_raw(fixed_raw or "")
-        return fixed if fixed else None
+        out = getattr(res, "final_output", None)
+        # Structured Output bevorzugt
+        if hasattr(out, "code") and isinstance(out.code, str) and out.code.strip():
+            return out.code.strip()
+        # Fallback (sollte selten vorkommen)
+        if isinstance(out, str) and out.strip():
+            return out.strip()
+        return None
     except Exception:
         return None
 
@@ -868,8 +880,3 @@ if code_str:
             st.json(st.session_state["runner_results"]["inproc"])
             st.error(st.session_state["runner_results"]["inproc"]["traceback"])
 # === Ende Runner-Panel ========================================================
-
-
-
-
-
