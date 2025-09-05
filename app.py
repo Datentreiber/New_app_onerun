@@ -583,6 +583,223 @@ if prompt:
                 st.info("Hinweis: Auf Streamlit Cloud ist die zweite Instanz in der Regel nicht erreichbar.")
                 st.success(f"Lokale URL (falls lokal ausgeführt): {res['url']}  (PID: {res.get('pid')})")
 
+# ============================================================================
+# >>>>>>>> SELF-HEALING: Prä-Exec-Sandbox, EE-Init-Detektor, Fixer-Agent <<<<<<
+# ============================================================================
+import sys as _sh_sys
+import io as _sh_io
+import tokenize as _sh_tokenize
+import traceback as _sh_traceback
+import contextlib as _sh_ctx
+from typing import Set as _sh_Set, Optional as _sh_Optional, List as _sh_List, Tuple as _sh_Tuple
+
+from geemap.foliumap import Map as _sh_Map
+import geemap as _sh_geemap
+import ee as _sh_ee
+
+# 1) Tokenbasierter EE-Init-Detektor
+_SH_FORBIDDEN_CALLS: _sh_Set[str] = {"Initialize", "Authenticate"}
+
+def _sh_detect_forbidden_ee_usage(code_text: str) -> _sh_List[_sh_Tuple[int, str]]:
+    findings: _sh_List[_sh_Tuple[int, str]] = []
+    if not isinstance(code_text, str) or not code_text.strip():
+        return [(0, "Leerer oder ungültiger Code-Text.")]
+
+    aliases: _sh_Set[str] = {"ee"}
+
+    try:
+        tokens = list(_sh_tokenize.generate_tokens(_sh_io.StringIO(code_text).readline))
+    except _sh_tokenize.TokenError as te:
+        findings.append((0, f"Tokenisierungsfehler: {te}"))
+        return findings
+
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+        if tok.type == _sh_tokenize.NAME and tok.string == "import":
+            j = i + 1
+            while j < len(tokens) and tokens[j].type != _sh_tokenize.NEWLINE:
+                if tokens[j].type == _sh_tokenize.NAME and tokens[j].string == "ee":
+                    k = j + 1
+                    alias = "ee"
+                    if k < len(tokens) and tokens[k].type == _sh_tokenize.NAME and tokens[k].string == "as":
+                        if k + 1 < len(tokens) and tokens[k + 1].type == _sh_tokenize.NAME:
+                            alias = tokens[k + 1].string
+                            j = k + 1
+                    aliases.add(alias)
+                j += 1
+            i = j
+            continue
+
+        if tok.type == _sh_tokenize.NAME and tok.string == "from":
+            j = i + 1
+            if j < len(tokens) and tokens[j].type == _sh_tokenize.NAME and tokens[j].string == "ee":
+                j += 1
+                if j < len(tokens) and tokens[j].type == _sh_tokenize.NAME and tokens[j].string == "import":
+                    j += 1
+                    while j < len(tokens) and tokens[j].type != _sh_tokenize.NEWLINE:
+                        if tokens[j].type == _sh_tokenize.NAME and tokens[j].string in _SH_FORBIDDEN_CALLS:
+                            findings.append((tokens[j].start[0], f"Verbotener Direktimport aus ee: {tokens[j].string}"))
+                        j += 1
+            while j < len(tokens) and tokens[j].type != _sh_tokenize.NEWLINE:
+                j += 1
+            i = j
+            continue
+
+        i += 1
+
+    i = 0
+    while i < len(tokens) - 3:
+        t0, t1, t2, t3 = tokens[i], tokens[i + 1], tokens[i + 2], tokens[i + 3]
+        if (
+            t0.type == _sh_tokenize.NAME and t0.string in aliases and
+            t1.type == _sh_tokenize.OP and t1.string == "." and
+            t2.type == _sh_tokenize.NAME and t2.string in _SH_FORBIDDEN_CALLS and
+            t3.type == _sh_tokenize.OP and t3.string == "("
+        ):
+            findings.append((t2.start[0], f"Verbotener Aufruf: {t0.string}.{t2.string}(...)"))
+        i += 1
+
+    return findings
+
+# 2) Null-Streamlit-Stub für unsichtbaren Testlauf
+class _SH_NullStreamlit:
+    def __init__(self):
+        self.session_state = {}
+    def __getattr__(self, name):
+        if name == "cache_data":
+            def _identity_decorator(*dargs, **dkwargs):
+                def _wrap(func):
+                    return func
+                return _wrap
+            return _identity_decorator
+        def _noop(*args, **kwargs):
+            return None
+        return _noop
+
+class _SH_TempStreamlitModule:
+    def __init__(self, stub):
+        self.stub = stub
+        self._orig = None
+        self._had = False
+    def __enter__(self):
+        self._had = 'streamlit' in _sh_sys.modules
+        if self._had:
+            self._orig = _sh_sys.modules['streamlit']
+        _sh_sys.modules['streamlit'] = self.stub
+        return self
+    def __exit__(self, exc_type, exc, tb):
+        if self._had:
+            _sh_sys.modules['streamlit'] = self._orig
+        else:
+            try:
+                del _sh_sys.modules['streamlit']
+            except KeyError:
+                pass
+
+# 3) Unsichtbarer Testlauf (Sandbox)
+def _sh_dry_run_code(code_text: str) -> _sh_Tuple[bool, str]:
+    forbidden = _sh_detect_forbidden_ee_usage(code_text)
+    if forbidden:
+        lines = [f"Zeile {ln}: {reason}" for ln, reason in forbidden]
+        return False, "Policy-Verstoß (EE-Init im Snippet erkannt):\n" + "\n".join(lines)
+
+    null_st = _SH_NullStreamlit()
+    ns = {
+        "__name__": "__main__",
+        "ee": _sh_ee,
+        "geemap": _sh_geemap,
+        "Map": _sh_Map,
+        "st": null_st,
+    }
+    stdout_buf = _sh_io.StringIO()
+    stderr_buf = _sh_io.StringIO()
+    try:
+        compiled = compile(code_text, "<dry-run>", "exec")
+        with _SH_TempStreamlitModule(null_st), \
+             _sh_ctx.redirect_stdout(stdout_buf), \
+             _sh_ctx.redirect_stderr(stderr_buf):
+            exec(compiled, ns, ns)
+        logs = stdout_buf.getvalue()
+        errs = stderr_buf.getvalue()
+        combined = (logs + ("\n" + errs if errs else "")).strip()
+        return True, combined
+    except Exception:
+        tb = _sh_traceback.format_exc()
+        errs = stderr_buf.getvalue()
+        logs = stdout_buf.getvalue()
+        combined = (logs + ("\n" + errs if errs else "") + ("\n" + tb)).strip()
+        return False, combined
+
+# 4) Fixer-Agent (zweite Instanz)
+from agents import Agent as _sh_Agent, Runner as _sh_Runner
+from agents.models.openai_responses import OpenAIResponsesModel as _sh_Model
+
+_SH_FIXER_PROMPT = (
+    "Du bist ein Korrektur-Agent. Deine einzige Aufgabe ist es, übergebenen Python-Code "
+    "auf Basis des Fehlerprotokolls zu REPARIEREN, sodass er fehlerfrei läuft.\n"
+    "Rahmenbedingungen:\n"
+    "- Gib AUSSCHLIESSLICH den korrigierten, vollständigen Python-Code zurück – ohne Erklärungen.\n"
+    "- Verwende nur die bereits vorhandenen Komponenten/Imports, nichts Erfinden.\n"
+    "- Niemals ee.Initialize() oder ee.Authenticate() aufrufen. EE ist host-seitig initialisiert.\n"
+    "- Behalte Funktionalität und Parameter bei, repariere nur Fehlerursachen.\n"
+    "- Keine Platzhalter, keine Ellipsen, vollständiger, sofort lauffähiger Code."
+)
+
+def _sh_get_fixer_runner() -> _sh_Runner:
+    if "_fixer_runner" in st.session_state and st.session_state["_fixer_runner"] is not None:
+        return st.session_state["_fixer_runner"]
+    fixer_agent = _sh_Agent(
+        name="Fixer",
+        model=_sh_Model(model="gpt-5"),
+        instructions=_SH_FIXER_PROMPT,
+    )
+    fix_runner = _sh_Runner(agents=[fixer_agent])
+    st.session_state["_fixer_runner"] = fix_runner
+    return fix_runner
+
+def _sh_fix_code_once(code_text: str, error_log: str) -> _sh_Optional[str]:
+    fix_runner = _sh_get_fixer_runner()
+    user_payload = (
+        "Repariere den folgenden Python-Code auf Basis dieses Fehlerlogs.\n"
+        "Gib NUR den vollständigen, korrigierten Code zurück.\n\n"
+        "=== FEHLERLOG ===\n"
+        f"{error_log}\n\n"
+        "=== CODE ===\n"
+        f"{code_text}\n"
+        "=== ENDE ==="
+    )
+    try:
+        res = fix_runner.run_sync(user_payload)
+        fixed = getattr(res, "final_output", None)
+        if isinstance(fixed, str) and fixed.strip():
+            return fixed
+        return None
+    except Exception:
+        return None
+
+# 5) Orchestrierung: iteriere bis lauffähig
+def self_heal_until_runs(code_text: str, max_rounds: int = 3) -> _sh_Tuple[bool, str, str]:
+    current = code_text
+    attempts: _sh_List[str] = []
+    for round_idx in range(1, max_rounds + 1):
+        ok, logs = _sh_dry_run_code(current)
+        attempts.append(f"[Runde {round_idx}] OK={ok}\n{logs}")
+        if ok:
+            return True, current, logs
+        fixed = _sh_fix_code_once(current, logs)
+        if not fixed:
+            return False, current, "\n\n".join(attempts)
+        current = fixed
+    ok, logs = _sh_dry_run_code(current)
+    attempts.append(f"[Runde {max_rounds+1}] OK={ok}\n{logs}")
+    return (True, current, "\n\n".join(attempts)) if ok else (False, current, "\n\n".join(attempts))
+
+# 6) Sichtbare Ausführung (nach bestandenem Dry-Run)
+def run_generated_code_visible(code_text: str, ns: dict) -> None:
+    compiled = compile(code_text, "<generated>", "exec")
+    exec(compiled, ns, ns)
+
 # === Runner-Panel: In-Process-Ausführung des generierten Codes (immer) ========
 import sys
 import traceback
@@ -614,10 +831,20 @@ if code_str:
     #         importlib.reload(sys.modules[mod])
 
     try:
-        ns: dict[str, object] = {"__name__": "__generated__"}
-        compiled = compile(code_str, filename="<generated>", mode="exec")
-        exec(compiled, ns, ns)  # <-- läuft bei JEDEM RERUN, teilt sich st.session_state
-        st.session_state["runner_results"]["inproc"] = {"ok": True}
+        # >>> Self-Healing vor sichtbarer Ausführung
+        ok, final_code, heal_log = self_heal_until_runs(code_str, max_rounds=3)
+        if ok:
+            ns: dict[str, object] = {"__name__": "__generated__", "st": st, "ee": ee, "geemap": _sh_geemap, "Map": _sh_Map}
+            run_generated_code_visible(final_code, ns)  # sichtbare Exec mit echtem Streamlit
+            st.session_state["runner_results"]["inproc"] = {"ok": True}
+        else:
+            st.session_state["runner_results"]["inproc"] = {
+                "ok": False,
+                "error": "Automatische Reparatur fehlgeschlagen.",
+                "logs": heal_log,
+            }
+            with st.expander("Ergebnis / Logs", expanded=True):
+                st.json(st.session_state["runner_results"]["inproc"])
     except Exception as e:
         st.session_state["runner_results"]["inproc"] = {
             "ok": False,
@@ -628,5 +855,3 @@ if code_str:
             st.json(st.session_state["runner_results"]["inproc"])
             st.error(st.session_state["runner_results"]["inproc"]["traceback"])
 # === Ende Runner-Panel ========================================================
-
-
