@@ -8,7 +8,7 @@ import uuid
 import hashlib
 import pathlib
 import subprocess
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
 
 import streamlit as st
 import asyncio  # Event-Loop-Fix für Streamlit-Thread
@@ -82,6 +82,68 @@ def _ls_usecase_ids() -> List[str]:
     if not USECASES_DIR.exists():
         return []
     return sorted([p.stem for p in USECASES_DIR.glob("*.yml")])
+
+def extract_first_python_block(text: str) -> Optional[str]:
+    m = re.search(r"```(?:python)?\s*(.+?)```", text, flags=re.DOTALL | re.IGNORECASE)
+    return m.group(1).strip() if m else None
+
+# ---- NEU: PLAN_SPEC abfangen & aus UI entfernen ------------------------------
+PLAN_SPEC_KEY_CANDIDATES = ("use_case", "aoi_spec", "render", "components")
+
+def _looks_like_plan_spec(obj: Any) -> bool:
+    if not isinstance(obj, dict):
+        return False
+    return all(k in obj for k in PLAN_SPEC_KEY_CANDIDATES)
+
+def _extract_plan_spec_from_text(answer_text: str) -> Tuple[Optional[dict], str]:
+    """
+    Sucht nach PLAN_SPEC in der sichtbaren Antwort und entfernt sie.
+    Unterstützt:
+      - Marker: PLAN_SPEC_BEGIN ... PLAN_SPEC_END (mit JSON dazwischen)
+      - Fenced code block ```json ... ``` mit Schlüsseln 'use_case', 'aoi_spec', ...
+    Gibt (plan_spec_dict|None, bereinigter_antwort_text) zurück.
+    """
+    text = answer_text or ""
+
+    # 1) Marker-Variante
+    marker_regex = re.compile(
+        r"PLAN_SPEC_BEGIN\s*```json\s*(\{.*?\})\s*```\s*PLAN_SPEC_END",
+        re.DOTALL | re.IGNORECASE
+    )
+    m = marker_regex.search(text)
+    if m:
+        try:
+            spec = json.loads(m.group(1))
+            cleaned = marker_regex.sub("", text).strip()
+            if _looks_like_plan_spec(spec):
+                return spec, cleaned
+        except Exception:
+            pass  # weiter unten andere Varianten testen
+
+    # 2) Fenced JSON-Block ohne Marker, der wie PLAN_SPEC aussieht
+    fence_json_regex = re.compile(r"```json\s*(\{.*?\})\s*```", re.DOTALL | re.IGNORECASE)
+    for jm in fence_json_regex.finditer(text):
+        try:
+            candidate = json.loads(jm.group(1))
+            if _looks_like_plan_spec(candidate):
+                cleaned = (text[:jm.start()] + text[jm.end():]).strip()
+                return candidate, cleaned
+        except Exception:
+            continue
+
+    # 3) Inline-JSON mit PLAN_SPEC-Hinweisen
+    brace_regex = re.compile(r"(\{[^{}]+\})", re.DOTALL)
+    for bm in brace_regex.finditer(text):
+        try:
+            candidate = json.loads(bm.group(1))
+            if _looks_like_plan_spec(candidate):
+                cleaned = (text[:bm.start()] + text[bm.end():]).strip()
+                return candidate, cleaned
+        except Exception:
+            continue
+
+    # Nichts gefunden
+    return None, text
 
 # ===== Neue Function Tools (Layer 1.1 → 1.2 → 2 → 3) =========================
 @function_tool
@@ -266,6 +328,8 @@ if AGENTS_OK:
         instructions=MEGA_PROMPT,
         tools=[tool_get_meta, tool_get_policy, tool_get_uc_sections, tool_bundle_components, tool_run_python],
         model=OpenAIResponsesModel(model=os.environ.get("OPENAI_MODEL", "gpt-4o"), openai_client=openai_client),
+        # Hinweis: Structured Outputs (plan_spec/python_code) werden unten robust abgegriffen,
+        # selbst wenn das Modell sie in den Text schreibt.
     )
 
 # ===== Streamlit: echtes Chat-Interface ======================================
@@ -286,6 +350,12 @@ with st.sidebar:
     except Exception as e:
         st.warning(f"Debug-Auflistung fehlgeschlagen: {e}")
     st.divider()
+    # ---- NEU: PLAN_SPEC Capture-Status
+    plan_present = bool(st.session_state.get("last_plan_spec"))
+    st.caption(f"PLAN_SPEC captured: {'✅' if plan_present else '—'}")
+    if plan_present and st.checkbox("PlanSpec (debug) anzeigen"):
+        st.json(st.session_state.get("last_plan_spec"))
+
     st.caption("Hinweis: AOI/Zeitraum/Parameter werden im Dialog geklärt; der Agent bündelt Komponenten vor dem Code.")
 
 # Chat-Speicher (UI) — unabhängig von der SDK-Session
@@ -296,6 +366,11 @@ if "last_code" not in st.session_state:
 if "agent_session_id" not in st.session_state:
     # stabile ID pro Browser-Session
     st.session_state.agent_session_id = uuid.uuid4().hex
+# Neu: PlanSpec-Speicher
+if "last_plan_spec" not in st.session_state:
+    st.session_state.last_plan_spec = None
+if "last_plan_spec_raw" not in st.session_state:
+    st.session_state.last_plan_spec_raw = ""
 
 # SDK-Session herstellen (persistentes Gedächtnis via SQLite)
 if AGENTS_OK:
@@ -316,10 +391,6 @@ for m in st.session_state.messages:
     with st.chat_message(m["role"]):
         st.markdown(m["content"])
 
-def extract_first_python_block(text: str) -> Optional[str]:
-    m = re.search(r"```(?:python)?\s*(.+?)```", text, flags=re.DOTALL | re.IGNORECASE)
-    return m.group(1).strip() if m else None
-
 # Chat-Eingabe
 prompt = st.chat_input("Nachricht an den Agenten eingeben und mit Enter senden…")
 if prompt:
@@ -331,6 +402,8 @@ if prompt:
     # 2) Agent call mit Iterations-Injektion + echter SDK-Session
     if not AGENTS_OK:
         answer = "**Fehler:** Agents SDK nicht verfügbar. Bitte SDK installieren/konfigurieren und Server neu starten."
+        raw_answer = answer
+        result = None
     else:
         iteration_context = ""
         if st.session_state.last_code:
@@ -350,9 +423,34 @@ if prompt:
             max_turns=DEFAULT_MAX_TURNS,  # <-- allow enough tool/LLM steps per run
         )
 
-        answer = result.final_output or ""
+        raw_answer = result.final_output or ""
+        answer = raw_answer
 
-    # 3) Assistant-Antwort rendern — Markdown anzeigen
+        # ---- NEU: Versuche, PLAN_SPEC zuerst direkt aus result-Objekt zu lesen
+        plan_spec_obj = None
+        try:
+            # gängige Pfade in der Agents SDK (robust gegen Varianten)
+            if hasattr(result, "outputs") and isinstance(result.outputs, dict) and result.outputs.get("plan_spec"):
+                plan_spec_obj = result.outputs.get("plan_spec")
+            elif hasattr(result, "named_outputs") and isinstance(result.named_outputs, dict) and result.named_outputs.get("plan_spec"):
+                plan_spec_obj = result.named_outputs.get("plan_spec")
+            elif hasattr(result, "get_output") and callable(result.get_output):
+                plan_spec_obj = result.get_output("plan_spec")  # type: ignore
+        except Exception:
+            plan_spec_obj = None
+
+        # Falls nicht im Result-Kanal: aus sichtbarem Text extrahieren & entfernen
+        if plan_spec_obj is None:
+            extracted, cleaned_text = _extract_plan_spec_from_text(raw_answer)
+            if extracted:
+                plan_spec_obj = extracted
+                answer = cleaned_text  # UI-bereinigte Antwort
+        # persistieren (debugbar, aber nicht in UI angezeigt)
+        if plan_spec_obj is not None and _looks_like_plan_spec(plan_spec_obj):
+            st.session_state.last_plan_spec = plan_spec_obj
+            st.session_state.last_plan_spec_raw = json.dumps(plan_spec_obj, ensure_ascii=False, indent=2)
+
+    # 3) Assistant-Antwort rendern — PLAN_SPEC ist ggf. schon entfernt
     with st.chat_message("assistant"):
         st.markdown(answer)
     st.session_state.messages.append({"role": "assistant", "content": answer})
@@ -422,7 +520,3 @@ if code_str:
             st.json(st.session_state["runner_results"]["inproc"])
             st.error(st.session_state["runner_results"]["inproc"]["traceback"])
 # === Ende Runner-Panel ========================================================
-
-
-
-
