@@ -383,35 +383,32 @@ import traceback
 import types
 import streamlit as st
 
-# Stelle sicher, dass das Repo-Root im sys.path ist (damit imports wie blocks.components... aufgelöst werden)
 if "" not in sys.path and "." not in sys.path:
     sys.path.insert(0, "")
 
 if "runner_results" not in st.session_state:
     st.session_state["runner_results"] = {}
+if "runner_autorun" not in st.session_state:
+    # Standard: automatisch bei jedem Rerun ausführen (empfohlen)
+    st.session_state["runner_autorun"] = True
 
-# Das Panel soll IMMER sichtbar sein, sobald last_code existiert/gesetzt wurde
 code_str = st.session_state.get("last_code", "")
 
 if code_str:
     st.write("---")
     st.subheader("Runner (In-Process)")
 
-    # Zeig den (finalen) Code
+    # Optionaler Toggle: Auto-Update bei jeder Widgetänderung (Rerun)
+    st.checkbox("🔁 Auto-update on widget change", key="runner_autorun",
+                help="Führt den generierten Code bei jedem Streamlit-Rerun erneut aus.")
+
     st.code(code_str, language="python")
 
     def run_generated_code_verbatim(code: str):
-        """
-        Führt den gegebenen Python-Code-String im GLEICHEN Prozess aus.
-        Der Code darf top-level Streamlit-Aufrufe enthalten (st.title, Columns, Maps, ...).
-        Wichtig: imports wie 'from blocks.components.util.scaffold import ee_authenticate' funktionieren,
-        weil sys.path auf Repo-Root zeigt.
-        """
-        # Wir geben dem Snippet einen sauberen, aber echten Namespace.
-        # Wichtig: KEIN Proxy – 'import streamlit as st' im Snippet bindet auf echtes streamlit.
-        ns: dict[str, object] = {
-            "__name__": "__generated__",
-        }
+        import importlib, sys
+        # Falls du Komponenten on-the-fly änderst, kannst du sie hier (selectiv) reloaden.
+        # Für reine UI-Interaktionen ist reload nicht notwendig und kostet Zeit.
+        ns: dict[str, object] = {"__name__": "__generated__"}
         try:
             compiled = compile(code, filename="<generated>", mode="exec")
             exec(compiled, ns, ns)
@@ -419,13 +416,19 @@ if code_str:
         except Exception as e:
             return {"ok": False, "error": str(e), "traceback": traceback.format_exc()}
 
-    # Persistenter Button (verschwindet nicht nach Rerun, Ergebnisse bleiben sichtbar)
-    if st.button("🚀 Run in runner (in-process)", key="runner_inproc"):
-        with st.spinner("Executing generated code in-process…"):
+    # Manuell ausführen
+    clicked = st.button("🚀 Run in runner (in-process)", key="runner_inproc")
+
+    # WICHTIG: Automatisch bei jedem Rerun ausführen, wenn aktiviert ODER noch nie gelaufen
+    need_run = st.session_state.get("runner_autorun", True) or \
+               ("inproc" not in st.session_state["runner_results"]) or clicked
+
+    if need_run:
+        with st.spinner("Rendering generated app…"):
             res = run_generated_code_verbatim(code_str)
         st.session_state["runner_results"]["inproc"] = res
 
-    # Ergebnisse/Fehler anzeigen (persistiert über Reruns)
+    # Ergebnisse/Fehler anzeigen
     res = st.session_state["runner_results"].get("inproc")
     if res:
         with st.expander("Ergebnis / Logs", expanded=not res.get("ok", False)):
@@ -433,4 +436,5 @@ if code_str:
             if not res.get("ok", False) and res.get("traceback"):
                 st.error(res["traceback"])
 # === Ende Runner-Panel ========================================================
+
 
