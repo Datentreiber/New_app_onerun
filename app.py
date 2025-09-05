@@ -100,7 +100,7 @@ def render_l1_suggestions() -> Optional[Dict[str, Any]]:
     for i, s in enumerate(suggs):
         label = s.get("label", f"Option {i+1}")
         with cols[i % len(cols)]:
-            if st.button(label, key=f"sugg_{s.get("id", i)}"):
+            if st.button(label, key=f"sugg_{s.get('id', i)}"):
                 chosen = s
     return chosen
 
@@ -661,7 +661,7 @@ class _SH_TempStreamlitModule:
     def __init__(self, stub):
         self.stub = stub
         self._orig = None
-        self._had = False
+               self._had = False
     def __enter__(self):
         self._had = 'streamlit' in _sh_sys.modules
         if self._had:
@@ -711,13 +711,12 @@ def _sh_dry_run_code(code_text: str) -> _sh_Tuple[bool, str]:
         combined = (logs + ("\n" + errs if errs else "") + ("\n" + tb)).strip()
         return False, combined
 
-# 4) Fixer-Agent (zweite Instanz) — nur wenn Agents SDK verfügbar
+# 4) Fixer-Agent (zweite Instanz) — Agents SDK an AGENTS_OK koppeln
 if AGENTS_OK:
-    from agents import Agent as _sh_Agent, Runner as _sh_Runner
+    from agents import Agent as _sh_Agent
     from agents.models.openai_responses import OpenAIResponsesModel as _sh_Model
 else:
     _sh_Agent = None  # type: ignore
-    _sh_Runner = None  # type: ignore
     _sh_Model = None  # type: ignore
 
 _SH_FIXER_PROMPT = (
@@ -731,26 +730,25 @@ _SH_FIXER_PROMPT = (
     "- Keine Platzhalter, keine Ellipsen, vollständiger, sofort lauffähiger Code."
 )
 
-def _sh_get_fixer_runner():
+def _sh_get_fixer_agent():
     if not AGENTS_OK:
         return None
-    if "_fixer_runner" in st.session_state and st.session_state["_fixer_runner"] is not None:
-        return st.session_state["_fixer_runner"]
+    if "_fixer_agent" in st.session_state and st.session_state["_fixer_agent"] is not None:
+        return st.session_state["_fixer_agent"]
     fixer_agent = _sh_Agent(  # type: ignore
         name="Fixer",
         model=_sh_Model(  # type: ignore
             model=os.environ.get("OPENAI_MODEL", "gpt-4o"),
-            openai_client=openai_client,  # aus Hauptagent-Setup
+            openai_client=openai_client,  # reuse same OpenAI client as main agent
         ),
         instructions=_SH_FIXER_PROMPT,
     )
-    fix_runner = _sh_Runner(agents=[fixer_agent])  # type: ignore
-    st.session_state["_fixer_runner"] = fix_runner
-    return fix_runner
+    st.session_state["_fixer_agent"] = fixer_agent
+    return fixer_agent
 
 def _sh_fix_code_once(code_text: str, error_log: str) -> _sh_Optional[str]:
-    fix_runner = _sh_get_fixer_runner()
-    if fix_runner is None:
+    fixer_agent = _sh_get_fixer_agent()
+    if fixer_agent is None:
         return None
     user_payload = (
         "Repariere den folgenden Python-Code auf Basis dieses Fehlerlogs.\n"
@@ -762,7 +760,13 @@ def _sh_fix_code_once(code_text: str, error_log: str) -> _sh_Optional[str]:
         "=== ENDE ==="
     )
     try:
-        res = fix_runner.run_sync(user_payload)  # type: ignore
+        # WICHTIG: Kein Runner-Konstruktor – korrekte API ist Runner.run_sync(agent, ...)
+        res = Runner.run_sync(  # nutzt Agents SDK identisch zum Hauptagenten
+            fixer_agent,
+            input=user_payload,
+            session=sdk_session,            # gleiche Session, wenn gewünscht
+            max_turns=DEFAULT_MAX_TURNS,
+        )
         fixed = getattr(res, "final_output", None)
         if isinstance(fixed, str) and fixed.strip():
             return fixed
@@ -847,4 +851,3 @@ if code_str:
             st.json(st.session_state["runner_results"]["inproc"])
             st.error(st.session_state["runner_results"]["inproc"]["traceback"])
 # === Ende Runner-Panel ========================================================
-
