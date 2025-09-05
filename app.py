@@ -661,7 +661,7 @@ class _SH_TempStreamlitModule:
     def __init__(self, stub):
         self.stub = stub
         self._orig = None
-               self._had = False
+        self._had = False
     def __enter__(self):
         self._had = 'streamlit' in _sh_sys.modules
         if self._had:
@@ -851,3 +851,4 @@ if code_str:
             st.json(st.session_state["runner_results"]["inproc"])
             st.error(st.session_state["runner_results"]["inproc"]["traceback"])
 # === Ende Runner-Panel ========================================================
+
