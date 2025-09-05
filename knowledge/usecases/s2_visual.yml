@@ -69,6 +69,7 @@ checks:
   - "Wenn Mosaik leer ist: Hinweis (Wolkenfilter zu streng?)."
 
 few_shot_components:
+  - "blocks/components/util/scaffold.py"
   - "blocks/components/gee/aoi_from_spec.py"
   - "blocks/components/gee/s2_mosaic_acquire_process.py"
   - "blocks/components/visual/split_map_right.py"
