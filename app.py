@@ -15,27 +15,7 @@ import asyncio  # Event-Loop-Fix für Streamlit-Thread
 # ... existing imports ...
 import os
 
-import ee
-from ee import ServiceAccountCredentials
 
-def _ee_init_once():
-    if "ee_ready" in st.session_state:
-        return
-    project = st.secrets["EE_PROJECT"]
-    sa      = st.secrets["EE_SERVICE_ACCOUNT"]
-    key     = st.secrets["EE_PRIVATE_KEY"]
-    creds = ServiceAccountCredentials(sa, key)
-    ee.Initialize(credentials=creds, project=project)
-    st.session_state["ee_ready"] = True
-
-_ee_init_once()
-
-# Einmalige, service-account-basierte EE-Init
-# Erwartet in .streamlit/secrets.toml:
-# EE_PROJECT = "talk2earth"   (o. ä.)
-# EE_SERVICE_ACCOUNT = "svc-account@<project>.iam.gserviceaccount.com"
-# EE_PRIVATE_KEY = """-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"""
-ee_authenticate()
 # --- Agent run limits (configurable via env var) ---
 DEFAULT_MAX_TURNS = int(os.getenv("AGENT_MAX_TURNS", "100"))  # raise from SDK default (~12)
 
@@ -867,3 +847,4 @@ if code_str:
             st.json(st.session_state["runner_results"]["inproc"])
             st.error(st.session_state["runner_results"]["inproc"]["traceback"])
 # === Ende Runner-Panel ========================================================
+
