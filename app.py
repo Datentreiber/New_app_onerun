@@ -15,7 +15,27 @@ import asyncio  # Event-Loop-Fix für Streamlit-Thread
 # ... existing imports ...
 import os
 
+import ee
+from ee import ServiceAccountCredentials
 
+def _ee_init_once():
+    if "ee_ready" in st.session_state:
+        return
+    project = st.secrets["EE_PROJECT"]
+    sa      = st.secrets["EE_SERVICE_ACCOUNT"]
+    key     = st.secrets["EE_PRIVATE_KEY"]
+    creds = ServiceAccountCredentials(sa, key)
+    ee.Initialize(credentials=creds, project=project)
+    st.session_state["ee_ready"] = True
+
+_ee_init_once()
+
+# Einmalige, service-account-basierte EE-Init
+# Erwartet in .streamlit/secrets.toml:
+# EE_PROJECT = "talk2earth"   (o. ä.)
+# EE_SERVICE_ACCOUNT = "svc-account@<project>.iam.gserviceaccount.com"
+# EE_PRIVATE_KEY = """-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"""
+ee_authenticate()
 # --- Agent run limits (configurable via env var) ---
 DEFAULT_MAX_TURNS = int(os.getenv("AGENT_MAX_TURNS", "100"))  # raise from SDK default (~12)
 
@@ -100,7 +120,7 @@ def render_l1_suggestions() -> Optional[Dict[str, Any]]:
     for i, s in enumerate(suggs):
         label = s.get("label", f"Option {i+1}")
         with cols[i % len(cols)]:
-            if st.button(label, key=f"sugg_{s.get('id', i)}"):
+            if st.button(label, key=f"sugg_{s.get("id", i)}"):
                 chosen = s
     return chosen
 
@@ -711,9 +731,14 @@ def _sh_dry_run_code(code_text: str) -> _sh_Tuple[bool, str]:
         combined = (logs + ("\n" + errs if errs else "") + ("\n" + tb)).strip()
         return False, combined
 
-# 4) Fixer-Agent (zweite Instanz)
-from agents import Agent as _sh_Agent, Runner as _sh_Runner
-from agents.models.openai_responses import OpenAIResponsesModel as _sh_Model
+# 4) Fixer-Agent (zweite Instanz) — nur wenn Agents SDK verfügbar
+if AGENTS_OK:
+    from agents import Agent as _sh_Agent, Runner as _sh_Runner
+    from agents.models.openai_responses import OpenAIResponsesModel as _sh_Model
+else:
+    _sh_Agent = None  # type: ignore
+    _sh_Runner = None  # type: ignore
+    _sh_Model = None  # type: ignore
 
 _SH_FIXER_PROMPT = (
     "Du bist ein Korrektur-Agent. Deine einzige Aufgabe ist es, übergebenen Python-Code "
@@ -726,20 +751,27 @@ _SH_FIXER_PROMPT = (
     "- Keine Platzhalter, keine Ellipsen, vollständiger, sofort lauffähiger Code."
 )
 
-def _sh_get_fixer_runner() -> _sh_Runner:
+def _sh_get_fixer_runner():
+    if not AGENTS_OK:
+        return None
     if "_fixer_runner" in st.session_state and st.session_state["_fixer_runner"] is not None:
         return st.session_state["_fixer_runner"]
-    fixer_agent = _sh_Agent(
+    fixer_agent = _sh_Agent(  # type: ignore
         name="Fixer",
-        model=_sh_Model(model="gpt-5"),
+        model=_sh_Model(  # type: ignore
+            model=os.environ.get("OPENAI_MODEL", "gpt-4o"),
+            openai_client=openai_client,  # aus Hauptagent-Setup
+        ),
         instructions=_SH_FIXER_PROMPT,
     )
-    fix_runner = _sh_Runner(agents=[fixer_agent])
+    fix_runner = _sh_Runner(agents=[fixer_agent])  # type: ignore
     st.session_state["_fixer_runner"] = fix_runner
     return fix_runner
 
 def _sh_fix_code_once(code_text: str, error_log: str) -> _sh_Optional[str]:
     fix_runner = _sh_get_fixer_runner()
+    if fix_runner is None:
+        return None
     user_payload = (
         "Repariere den folgenden Python-Code auf Basis dieses Fehlerlogs.\n"
         "Gib NUR den vollständigen, korrigierten Code zurück.\n\n"
@@ -750,7 +782,7 @@ def _sh_fix_code_once(code_text: str, error_log: str) -> _sh_Optional[str]:
         "=== ENDE ==="
     )
     try:
-        res = fix_runner.run_sync(user_payload)
+        res = fix_runner.run_sync(user_payload)  # type: ignore
         fixed = getattr(res, "final_output", None)
         if isinstance(fixed, str) and fixed.strip():
             return fixed
@@ -835,4 +867,3 @@ if code_str:
             st.json(st.session_state["runner_results"]["inproc"])
             st.error(st.session_state["runner_results"]["inproc"]["traceback"])
 # === Ende Runner-Panel ========================================================
-
