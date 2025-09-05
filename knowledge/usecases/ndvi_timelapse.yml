@@ -65,6 +65,7 @@ checks:
   - "Wenn DOY-Collection leer ist: Hinweis ausgeben (Account/Zeitraum prüfen)."
 
 few_shot_components:
+  - "blocks/components/util/scaffold.py"
   - "blocks/components/gee/aoi_from_spec.py"
   - "blocks/components/gee/ndvi_acquire_process.py"
   - "blocks/components/visual/ndvi_timelapse_panel.py"
