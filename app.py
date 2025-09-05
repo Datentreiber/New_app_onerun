@@ -377,64 +377,52 @@ if prompt:
                 st.info("Hinweis: Auf Streamlit Cloud ist die zweite Instanz in der Regel nicht erreichbar.")
                 st.success(f"Lokale URL (falls lokal ausgeführt): {res['url']}  (PID: {res.get('pid')})")
 
-# === Runner-Panel: In-Process-Ausführung des generierten Codes =================
+# === Runner-Panel: In-Process-Ausführung des generierten Codes (immer) ========
 import sys
 import traceback
-import types
 import streamlit as st
 
+# Repo-Root im sys.path, damit imports wie blocks.components... funktionieren
 if "" not in sys.path and "." not in sys.path:
     sys.path.insert(0, "")
 
+# Ergebnis-Container (für Fehleranzeige)
 if "runner_results" not in st.session_state:
     st.session_state["runner_results"] = {}
-if "runner_autorun" not in st.session_state:
-    # Standard: automatisch bei jedem Rerun ausführen (empfohlen)
-    st.session_state["runner_autorun"] = True
 
 code_str = st.session_state.get("last_code", "")
 
 if code_str:
     st.write("---")
-    st.subheader("Runner (In-Process)")
-
-    # Optionaler Toggle: Auto-Update bei jeder Widgetänderung (Rerun)
-    st.checkbox("🔁 Auto-update on widget change", key="runner_autorun",
-                help="Führt den generierten Code bei jedem Streamlit-Rerun erneut aus.")
-
+    st.subheader("Runner (In-Process) — always on rerun")
     st.code(code_str, language="python")
 
-    def run_generated_code_verbatim(code: str):
-        import importlib, sys
-        # Falls du Komponenten on-the-fly änderst, kannst du sie hier (selectiv) reloaden.
-        # Für reine UI-Interaktionen ist reload nicht notwendig und kostet Zeit.
+    # OPTIONAL: wenn du während der Session Komponenten patchst, kannst du hier reloaden.
+    # Standardmäßig lassen wir das aus (wie „normaler“ Streamlit-Code).
+    # import importlib
+    # for mod in ["blocks.components.gee.aoi_from_spec",
+    #             "blocks.components.gee.ndvi_acquire_process",
+    #             "blocks.components.visual.ndvi_timelapse_panel",
+    #             "blocks.components.util.scaffold"]:
+    #     if mod in sys.modules:
+    #         importlib.reload(sys.modules[mod])
+
+    try:
         ns: dict[str, object] = {"__name__": "__generated__"}
-        try:
-            compiled = compile(code, filename="<generated>", mode="exec")
-            exec(compiled, ns, ns)
-            return {"ok": True}
-        except Exception as e:
-            return {"ok": False, "error": str(e), "traceback": traceback.format_exc()}
-
-    # Manuell ausführen
-    clicked = st.button("🚀 Run in runner (in-process)", key="runner_inproc")
-
-    # WICHTIG: Automatisch bei jedem Rerun ausführen, wenn aktiviert ODER noch nie gelaufen
-    need_run = st.session_state.get("runner_autorun", True) or \
-               ("inproc" not in st.session_state["runner_results"]) or clicked
-
-    if need_run:
-        with st.spinner("Rendering generated app…"):
-            res = run_generated_code_verbatim(code_str)
-        st.session_state["runner_results"]["inproc"] = res
-
-    # Ergebnisse/Fehler anzeigen
-    res = st.session_state["runner_results"].get("inproc")
-    if res:
-        with st.expander("Ergebnis / Logs", expanded=not res.get("ok", False)):
-            st.json(res)
-            if not res.get("ok", False) and res.get("traceback"):
-                st.error(res["traceback"])
+        compiled = compile(code_str, filename="<generated>", mode="exec")
+        exec(compiled, ns, ns)  # <-- läuft bei JEDEM RERUN, teilt sich st.session_state
+        st.session_state["runner_results"]["inproc"] = {"ok": True}
+    except Exception as e:
+        st.session_state["runner_results"]["inproc"] = {
+            "ok": False,
+            "error": str(e),
+            "traceback": traceback.format_exc(),
+        }
+        with st.expander("Ergebnis / Logs", expanded=True):
+            st.json(st.session_state["runner_results"]["inproc"])
+            st.error(st.session_state["runner_results"]["inproc"]["traceback"])
 # === Ende Runner-Panel ========================================================
+
+
 
 
