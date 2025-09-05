@@ -61,8 +61,11 @@ def render_split_map_right(
             right_name=title,
         )
     except Exception:
-        # Fallback: normales Layer
-        m.add_layer(right_layer, vis_params, title)
+        # Fallback: normales Layer (kompatibel mit add_layer oder addLayer)
+        fn = getattr(m, "add_layer", None) or getattr(m, "addLayer", None)
+        if fn is None:
+            raise RuntimeError("Map-Objekt unterstützt weder add_layer noch addLayer.")
+        fn(right_layer, vis_params, title)
 
     # Optionale Farbleiste, nur wenn Min/Max/Palette vorhanden
     try:
