@@ -14,7 +14,21 @@ import streamlit as st
 import asyncio  # Event-Loop-Fix für Streamlit-Thread
 # ... existing imports ...
 import os
-from blocks.components.util.scaffold import ee_authenticate
+
+import ee
+from ee import ServiceAccountCredentials
+
+def _ee_init_once():
+    if "ee_ready" in st.session_state:
+        return
+    project = st.secrets["EE_PROJECT"]
+    sa      = st.secrets["EE_SERVICE_ACCOUNT"]
+    key     = st.secrets["EE_PRIVATE_KEY"]
+    creds = ServiceAccountCredentials(sa, key)
+    ee.Initialize(credentials=creds, project=project)
+    st.session_state["ee_ready"] = True
+
+_ee_init_once()
 
 # Einmalige, service-account-basierte EE-Init
 # Erwartet in .streamlit/secrets.toml:
@@ -614,4 +628,5 @@ if code_str:
             st.json(st.session_state["runner_results"]["inproc"])
             st.error(st.session_state["runner_results"]["inproc"]["traceback"])
 # === Ende Runner-Panel ========================================================
+
 
