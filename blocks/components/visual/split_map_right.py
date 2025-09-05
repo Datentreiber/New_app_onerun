@@ -49,7 +49,7 @@ def render_split_map_right(
     # Split-Map (rechte Seite)
     try:
         m.split_map(
-            left_layer=None,
+            left_layer="OpenStreetMap",   # valid basemap; versionssicher
             right_layer=right_layer,
             right_vis=vis_params,
             right_name=title,
