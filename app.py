@@ -578,6 +578,17 @@ from geemap.foliumap import Map as _sh_Map
 import geemap as _sh_geemap
 import ee as _sh_ee
 
+
+# --- Fixer-Code-Extraktion (unterstützt fenced ```python ... ``` und Rohtext) ---
+_SH_CODE_BLOCK_RE = re.compile(r"```(?:python)?\s*(.*?)```", re.DOTALL | re.IGNORECASE)
+
+def _sh_extract_code_block_or_raw(text: str) -> str:
+    if not isinstance(text, str):
+        return ""
+    m = _SH_CODE_BLOCK_RE.search(text)
+    return (m.group(1) if m else text).strip()
+
+
 # 1) Tokenbasierter EE-Init-Detektor
 _SH_FORBIDDEN_CALLS: _sh_Set[str] = {"Initialize", "Authenticate"}
 
@@ -748,9 +759,13 @@ def _sh_get_fixer_agent():
     return fixer_agent
 
 def _sh_fix_code_once(code_text: str, error_log: str) -> _sh_Optional[str]:
+    # Streamlit-Thread hat oft keinen Default-Event-Loop → sicherstellen
+    ensure_event_loop()
+
     fixer_agent = _sh_get_fixer_agent()
     if fixer_agent is None:
         return None
+
     user_payload = (
         "Repariere den folgenden Python-Code auf Basis dieses Fehlerlogs.\n"
         "Gib NUR den vollständigen, korrigierten Code zurück.\n\n"
@@ -760,20 +775,21 @@ def _sh_fix_code_once(code_text: str, error_log: str) -> _sh_Optional[str]:
         f"{code_text}\n"
         "=== ENDE ==="
     )
+
     try:
-        # WICHTIG: Kein Runner-Konstruktor – korrekte API ist Runner.run_sync(agent, ...)
-        res = Runner.run_sync(  # nutzt Agents SDK identisch zum Hauptagenten
+        # Korrekte Agents-SDK-Nutzung: kein Runner-Konstruktor, sondern Runner.run_sync(agent, ...)
+        res = Runner.run_sync(
             fixer_agent,
             input=user_payload,
-            session=sdk_session,            # gleiche Session, wenn gewünscht
+            session=sdk_session,
             max_turns=DEFAULT_MAX_TURNS,
         )
-        fixed = getattr(res, "final_output", None)
-        if isinstance(fixed, str) and fixed.strip():
-            return fixed
-        return None
+        fixed_raw = getattr(res, "final_output", None)
+        fixed = _sh_extract_code_block_or_raw(fixed_raw or "")
+        return fixed if fixed else None
     except Exception:
         return None
+
 
 # 5) Orchestrierung: iteriere bis lauffähig
 def self_heal_until_runs(code_text: str, max_rounds: int = 3) -> _sh_Tuple[bool, str, str]:
@@ -852,5 +868,6 @@ if code_str:
             st.json(st.session_state["runner_results"]["inproc"])
             st.error(st.session_state["runner_results"]["inproc"]["traceback"])
 # === Ende Runner-Panel ========================================================
+
 
 
