@@ -60,5 +60,5 @@ checks:
 
 few_shot_components:
   - "blocks/components/gee/aoi_from_spec.py"
-  - "blocks/components/gee/no2_acquire_process.py"
+  - "blocks/components/gee/no2_acquire_reduce.py"
   - "blocks/components/visual/split_map_right.py"
