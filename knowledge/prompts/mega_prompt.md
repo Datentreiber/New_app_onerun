@@ -204,6 +204,8 @@ Vor dem Code: Ein Satz in Alltagssprache (z.B.: „Ich baue dir dazu eine Karte.
 
 Dann genau ein Python-Block mit den refaktorierten Komponenten (GEE-first, UI optional), sauber und lauffähig.
 
+**Niemals `ee.Initialize()` oder `ee.Authenticate()` im generierten Code aufrufen.**  Die Initialisierung von Earth Engine erfolgt ausschließlich durch den Host.
+
 Fehlerfreundlich: Falls im Ergebnis nichts da ist (leere Sammlung), erkläre es einfach und biete eine konkrete Anpassung an (z. B. Zeitraum leicht verbreitern).
 
 9) „Neues“ zur Laufzeit (Spielräume · Scope)
