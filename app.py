@@ -20,59 +20,55 @@ import ee
 import geemap
 from geemap.foliumap import Map  # häufig genutzt in Render-Komponenten
 
-# Page-Konfiguration
-st.set_page_config(
-    page_title="<INSERT APP TITLE HERE>",
-    page_icon="🌡️",
-    layout="wide",
-)
+def _ee__try_ready() -> bool:
+    try:
+        # billig & zuverlässig
+        _ = _ee.Image(1).getInfo()
+        return True
+    except Exception:
+        return False
 
-def _parse_key_from_secrets():
-    """
-    Akzeptiert sowohl:
-      - st.secrets["EE_PRIVATE_KEY"] als JSON-String
-      - oder bereits als Dict (z. B. wenn per TOML-Block eingefügt)
-    """
-    key_val = st.secrets.get("EE_PRIVATE_KEY")
+def _ee__parse_key_from_secrets() -> dict:
+    key_val = _ee_st.secrets.get("EE_PRIVATE_KEY")
     if key_val is None:
         raise RuntimeError("EE_PRIVATE_KEY fehlt in streamlit secrets.")
     if isinstance(key_val, dict):
         return key_val
     if isinstance(key_val, str):
-        key_val_str = key_val.strip()
-        # Manche UIs speichern dreifach gequotete Strings → einfach json.loads versuchen
-        return json.loads(key_val_str)
-    raise RuntimeError("EE_PRIVATE_KEY hat unbekanntes Format (weder str noch dict).")
+        return _ee_json.loads(key_val.strip())
+    raise RuntimeError("EE_PRIVATE_KEY Format unbekannt (weder str noch dict).")
 
-@st.cache_data
-def ee_authenticate(token_name: str = "EARTHENGINE_TOKEN") -> None:
-    """
-    Initialisiert Earth Engine einmalig anhand der Streamlit-Cloud-Secrets.
-    Erwartete Keys:
-      - EE_PROJECT
-      - EE_SERVICE_ACCOUNT
-      - EE_PRIVATE_KEY  (ganzer JSON-Inhalt des Service-Account-Keys)
-    Hinweis: Der Parameter token_name bleibt für Rückwärtskompatibilität erhalten,
-    wird hier aber nicht verwendet (Secrets-basierte Initialisierung).
-    """
-    if st.session_state.get("_ee_ready"):
-        return
+@_ee_st.cache_data(show_spinner=False)
+def ee_maybe_init() -> bool:
+    # 0) Bereits initialisiert?
+    if _ee__try_ready():
+        return True
 
-    project = st.secrets.get("EE_PROJECT")
-    service_account = st.secrets.get("EE_SERVICE_ACCOUNT")
+    # 1) Streamlit-Secrets (Service Account)
+    project = _ee_st.secrets.get("EE_PROJECT")
+    sa_email = _ee_st.secrets.get("EE_SERVICE_ACCOUNT")
+    if project and sa_email and _ee_st.secrets.get("EE_PRIVATE_KEY") is not None:
+        try:
+            key_dict = _ee__parse_key_from_secrets()
+            creds = _ee.ServiceAccountCredentials(email=sa_email, key_data=_ee_json.dumps(key_dict))
+            _ee.Initialize(credentials=creds, project=project)
+            if _ee__try_ready():
+                return True
+        except Exception:
+            pass  # weiter zu (2)
 
-    if not project:
-        raise RuntimeError("EE_PROJECT fehlt in streamlit secrets.")
-    if not service_account:
-        raise RuntimeError("EE_SERVICE_ACCOUNT fehlt in streamlit secrets.")
+    # 2) Application Default / Host (falls vorhanden)
+    try:
+        _ee.Initialize()  # nutzt Host-/ADC-Umgebung, wenn vorhanden
+        if _ee__try_ready():
+            return True
+    except Exception:
+        pass
 
-    key_dict = _parse_key_from_secrets()
+    return False
 
-    # Credentials aufbauen und EE initialisieren
-    credentials = ee.ServiceAccountCredentials(email=service_account, key_data=json.dumps(key_dict))
-    ee.Initialize(credentials=credentials, project=project)
-
-    st.session_state["_ee_ready"] = True
+# einmalig aufrufen (vor dem Rest der UI)
+_EE_READY = ee_maybe_init()
 
 # --- Agent run limits (configurable via env var) ---
 DEFAULT_MAX_TURNS = int(os.getenv("AGENT_MAX_TURNS", "100"))  # raise from SDK default (~12)
@@ -936,5 +932,6 @@ if code_str:
             st.json(st.session_state["runner_results"]["inproc"])
             st.error(st.session_state["runner_results"]["inproc"]["traceback"])
 # === Ende Runner-Panel ========================================================
+
 
 
