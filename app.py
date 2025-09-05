@@ -14,6 +14,7 @@ import streamlit as st
 import asyncio  # Event-Loop-Fix für Streamlit-Thread
 # ... existing imports ...
 import os
+import ee
 from blocks.components.util.scaffold import ee_authenticate
 ee_authenticate()
 
@@ -868,6 +869,7 @@ if code_str:
             st.json(st.session_state["runner_results"]["inproc"])
             st.error(st.session_state["runner_results"]["inproc"]["traceback"])
 # === Ende Runner-Panel ========================================================
+
 
 
 
