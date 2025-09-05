@@ -37,6 +37,12 @@ Rendert die Karte nach Streamlit.
 from typing import Dict, Any, Optional
 from geemap.foliumap import Map
 
+def _add_layer(m, layer, vis, name):
+    fn = getattr(m, "add_layer", None) or getattr(m, "addLayer", None)
+    if fn is None:
+        raise RuntimeError("Map object lacks add_layer/addLayer")
+    return fn(layer, vis, name)
+
 def render_split_map_right(
     m: Map,
     right_layer: Any,
