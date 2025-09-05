@@ -20,47 +20,49 @@ import ee
 import geemap
 from geemap.foliumap import Map  # häufig genutzt in Render-Komponenten
 
-def _ee__try_ready() -> bool:
+# === EE-Init (zentral & idempotent) ==========================================
+import json
+
+def _ee_try_ready() -> bool:
     try:
-        # billig & zuverlässig
-        _ = _ee.Image(1).getInfo()
+        _ = ee.Image(1).getInfo()
         return True
     except Exception:
         return False
 
-def _ee__parse_key_from_secrets() -> dict:
-    key_val = _ee_st.secrets.get("EE_PRIVATE_KEY")
+def _ee_parse_key_from_secrets() -> dict:
+    key_val = st.secrets.get("EE_PRIVATE_KEY")
     if key_val is None:
         raise RuntimeError("EE_PRIVATE_KEY fehlt in streamlit secrets.")
     if isinstance(key_val, dict):
         return key_val
     if isinstance(key_val, str):
-        return _ee_json.loads(key_val.strip())
+        return json.loads(key_val.strip())
     raise RuntimeError("EE_PRIVATE_KEY Format unbekannt (weder str noch dict).")
 
-@_ee_st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False)
 def ee_maybe_init() -> bool:
     # 0) Bereits initialisiert?
-    if _ee__try_ready():
+    if _ee_try_ready():
         return True
 
     # 1) Streamlit-Secrets (Service Account)
-    project = _ee_st.secrets.get("EE_PROJECT")
-    sa_email = _ee_st.secrets.get("EE_SERVICE_ACCOUNT")
-    if project and sa_email and _ee_st.secrets.get("EE_PRIVATE_KEY") is not None:
+    project = st.secrets.get("EE_PROJECT")
+    sa_email = st.secrets.get("EE_SERVICE_ACCOUNT")
+    if project and sa_email and st.secrets.get("EE_PRIVATE_KEY") is not None:
         try:
-            key_dict = _ee__parse_key_from_secrets()
-            creds = _ee.ServiceAccountCredentials(email=sa_email, key_data=_ee_json.dumps(key_dict))
-            _ee.Initialize(credentials=creds, project=project)
-            if _ee__try_ready():
+            key_dict = _ee_parse_key_from_secrets()
+            creds = ee.ServiceAccountCredentials(email=sa_email, key_data=json.dumps(key_dict))
+            ee.Initialize(credentials=creds, project=project)
+            if _ee_try_ready():
                 return True
         except Exception:
             pass  # weiter zu (2)
 
     # 2) Application Default / Host (falls vorhanden)
     try:
-        _ee.Initialize()  # nutzt Host-/ADC-Umgebung, wenn vorhanden
-        if _ee__try_ready():
+        ee.Initialize()  # nutzt Host-/ADC-Umgebung, wenn vorhanden
+        if _ee_try_ready():
             return True
     except Exception:
         pass
@@ -932,6 +934,7 @@ if code_str:
             st.json(st.session_state["runner_results"]["inproc"])
             st.error(st.session_state["runner_results"]["inproc"]["traceback"])
 # === Ende Runner-Panel ========================================================
+
 
 
 
