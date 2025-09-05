@@ -8,7 +8,7 @@ import uuid
 import hashlib
 import pathlib
 import subprocess
-from typing import Optional, List, Dict, Any, Tuple
+from typing import Optional, List, Dict, Any, Tuple, TypedDict  # <-- NEU: TypedDict
 
 import streamlit as st
 import asyncio  # Event-Loop-Fix für Streamlit-Thread
@@ -324,30 +324,43 @@ def tool_run_python(code: str,
 
     return json.dumps({"error": f"unknown mode '{mode}'"})
 
-# ===== NEU: UI-Vorschläge (Layer 1) ==========================================
+# ===== NEU: UI-Vorschläge (Layer 1) — strict schema ===========================
+class UISuggestion(TypedDict):
+    id: str            # stabiler Key (snake_case)
+    label: str         # Button-Text (max ~50 Zeichen)
+    payload_json: str  # JSON-kodierter Payload (wir parsen ihn serverseitig)
+
 @function_tool
-def ui_suggest(suggestions: List[Dict[str, Any]], replace: bool = False) -> str:
+def ui_suggest(suggestions: List[UISuggestion], replace: bool = False) -> str:
     """
     Der Agent ruft dies früh in Layer 1 auf.
-    Erwartet eine Liste von Objekten: {id:str, label:str, payload:dict}.
-    Schreibt Vorschläge in st.session_state["l1_suggestions"].
+
+    Hinweise:
+    - 'suggestions' ist eine Liste von Objekten {id, label, payload_json}.
+    - 'payload_json' ist ein JSON-String; wird hier geparst und als 'payload' (dict) gespeichert.
+    - Wenn 'replace' True ist, werden vorhandene Vorschläge ersetzt.
     """
+    # Ersetzen oder anfügen
     if replace or "l1_suggestions" not in st.session_state:
         st.session_state["l1_suggestions"] = []
 
     normalized: List[Dict[str, Any]] = []
     for s in suggestions or []:
-        if not isinstance(s, dict):
+        try:
+            sid = str(s["id"]).strip()
+            label = str(s["label"]).strip()
+            payload_json = str(s["payload_json"])
+            if not sid or not label:
+                continue
+            payload = json.loads(payload_json)
+            if not isinstance(payload, dict):
+                continue
+            # Duplikate per id vermeiden
+            if any(x.get("id") == sid for x in st.session_state["l1_suggestions"]):
+                continue
+            normalized.append({"id": sid, "label": label, "payload": payload})
+        except Exception:
             continue
-        sid = str(s.get("id") or "")
-        label = str(s.get("label") or "").strip()
-        payload = s.get("payload")
-        if not sid or not label or not isinstance(payload, dict):
-            continue
-        # Duplikate (per id) vermeiden
-        if any(x.get("id") == sid for x in st.session_state["l1_suggestions"]):
-            continue
-        normalized.append({"id": sid, "label": label, "payload": payload})
 
     st.session_state["l1_suggestions"].extend(normalized)
     return json.dumps({"received": len(normalized)}, ensure_ascii=False)
