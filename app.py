@@ -1,4 +1,3 @@
-# app.py — talk2earth (Agents SDK + Streamlit) — Chat-UI, neue Tools, persistente SDK-Session
 from __future__ import annotations
 
 import os
@@ -937,4 +936,5 @@ if code_str:
             st.json(st.session_state["runner_results"]["inproc"])
             st.error(st.session_state["runner_results"]["inproc"]["traceback"])
 # === Ende Runner-Panel ========================================================
+
 
