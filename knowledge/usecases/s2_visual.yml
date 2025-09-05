@@ -70,5 +70,5 @@ checks:
 
 few_shot_components:
   - "blocks/components/gee/aoi_from_spec.py"
-  - "blocks/components/gee/s2_acquire_process.py"
+  - "blocks/components/gee/s2_mosaic_acquire_process.py"
   - "blocks/components/visual/split_map_right.py"
