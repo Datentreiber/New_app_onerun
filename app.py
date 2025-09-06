@@ -620,7 +620,7 @@ if prompt:
     code_block = extract_first_python_block(answer)
     if code_block:
         st.session_state.last_code = code_block  # nur für "Code anzeigen"
-        ok, final_code, heal_log = self_heal_until_runs(code_block, max_rounds=3)
+        ok, final_code, heal_log = self_heal_until_runs(code_str, max_rounds=5)
         if ok:
             st.session_state["healed_code"] = final_code
             # alten App-Output leeren und neue App rendern
@@ -911,3 +911,4 @@ if st.session_state.get("show_code", False):
         st.write("---")
         st.subheader("Code (Debug)")
         st.code(shown, language="python")
+
