@@ -381,6 +381,7 @@ def tool_run_python(code: str,
 
     return json.dumps({"error": f"unknown mode '{mode}'"})
 
+
 # ===== NEU: UI-Vorschläge (Layer 1) — strict schema ===========================
 class UISuggestion(TypedDict):
     id: str            # stabiler Key (snake_case)
@@ -455,6 +456,10 @@ if AGENTS_OK:
 st.set_page_config(page_title="talk2earth — EO Agent", layout="wide")
 st.title("talk2earth — EO Agent (Agents SDK + Streamlit)")
 
+# >>> NEU: Sichtbarer App-Ausgabebereich (ersetzt sich selbst)
+if "app_ph" not in st.session_state:
+    st.session_state["app_ph"] = st.empty()
+
 with st.sidebar:
     st.subheader("Status")
     st.write("Agents SDK:", "✅ bereit" if AGENTS_OK else f"❌ {AGENTS_IMPORT_ERROR}")
@@ -474,6 +479,14 @@ with st.sidebar:
     st.caption(f"PLAN_SPEC captured: {'✅' if plan_present else '—'}")
     if plan_present and st.checkbox("PlanSpec (debug) anzeigen"):
         st.json(st.session_state.get("last_plan_spec"))
+
+    # >>> NEU: Code nur auf Wunsch sichtbar machen
+    if st.button("Code anzeigen", type="secondary", help="Zeigt den aktuell erzeugten (ggf. reparierten) Code im Chat."):
+        code_to_show = st.session_state.get("healed_code") or st.session_state.get("last_code")
+        if code_to_show:
+            st.session_state["show_code"] = True
+            st.session_state.messages.append({"role": "assistant", "content": f"```python\n{code_to_show}\n```"})
+            st.rerun()
 
     st.caption("Hinweis: AOI/Zeitraum/Parameter werden im Dialog geklärt; der Agent bündelt Komponenten vor dem Code.")
 
@@ -603,25 +616,29 @@ if prompt:
         st.markdown(answer)
     st.session_state.messages.append({"role": "assistant", "content": answer})
 
-    # 4) Optional: Code-Block extrahieren & Buttons anbieten
+    # 4) Hidden execution pipeline: auto-heal, dann rendern (keine Code-Anzeige)
     code_block = extract_first_python_block(answer)
     if code_block:
-        st.session_state.last_code = code_block
-        st.write("---")
-        st.subheader("Erkannter Code aus der letzten Antwort")
-        st.code(code_block, language="python")
-        c1, c2 = st.columns(2)
-        if c1.button("Run in Runner (script)"):
-            with st.spinner("Runner (script)…"):
-                res = json.loads(tool_run_python(code_block, mode="script"))  # type: ignore
-            st.write(res)
-        if c2.button("Run in Runner (streamlit)"):
-            with st.spinner("Runner (streamlit)…"):
-                res = json.loads(tool_run_python(code_block, filename="agent_streamlit.py", mode="streamlit", port=8502))  # type: ignore
-            st.write(res)
-            if res.get("ok") and res.get("url"):
-                st.info("Hinweis: Auf Streamlit Cloud ist die zweite Instanz in der Regel nicht erreichbar.")
-                st.success(f"Lokale URL (falls lokal ausgeführt): {res['url']}  (PID: {res.get('pid')})")
+        st.session_state.last_code = code_block  # nur für "Code anzeigen"
+        ok, final_code, heal_log = self_heal_until_runs(code_block, max_rounds=3)
+        if ok:
+            st.session_state["healed_code"] = final_code
+            # alten App-Output leeren und neue App rendern
+            outlet = st.session_state.get("app_ph")
+            if outlet:
+                outlet.empty()
+            ns: dict[str, object] = {
+                "__name__": "__generated__", "st": st, "ee": ee, "geemap": geemap, "Map": Map
+            }
+            run_generated_code_visible(final_code, ns, outlet)
+            with st.sidebar:
+                st.caption("✅ Code automatisch repariert & ausgeführt.")
+        else:
+            # Keine Code-Anzeige – nur Logs, damit Fixer weiter iterieren kann
+            with st.expander("Fehler beim automatischen Ausführen – Logs", expanded=True):
+                st.write(heal_log)
+            with st.sidebar:
+                st.warning("Automatische Reparatur noch nicht erfolgreich.")
 
 # ============================================================================
 # >>>>>>>> SELF-HEALING: Prä-Exec-Sandbox, EE-Init-Detektor, Fixer-Agent <<<<<<
@@ -875,66 +892,22 @@ def self_heal_until_runs(code_text: str, max_rounds: int = 3) -> _sh_Tuple[bool,
     return (True, current, "\n\n".join(attempts)) if ok else (False, current, "\n\n".join(attempts))
 
 # 6) Sichtbare Ausführung (nach bestandenem Dry-Run)
-def run_generated_code_visible(code_text: str, ns: dict) -> None:
+def run_generated_code_visible(code_text: str, ns: dict, outlet=None) -> None:
     compiled = compile(code_text, "<generated>", "exec")
+    # Versuche, in einen bereitgestellten Outlet zu rendern; fallback auf globales st
+    try:
+        if outlet is not None and hasattr(outlet, "container"):
+            with outlet.container():
+                exec(compiled, ns, ns)
+                return
+    except Exception:
+        pass
     exec(compiled, ns, ns)
 
-# === Runner-Panel: In-Process-Ausführung des generierten Codes (immer) ========
-import sys
-import traceback
-import streamlit as st
-
-# Repo-Root im sys.path, damit imports wie blocks.components... funktionieren
-if "" not in sys.path and "." not in sys.path:
-    sys.path.insert(0, "")
-
-# Ergebnis-Container (für Fehleranzeige)
-if "runner_results" not in st.session_state:
-    st.session_state["runner_results"] = {}
-
-code_str = st.session_state.get("last_code", "")
-
-if code_str:
-    st.write("---")
-    st.subheader("Runner (In-Process) — always on rerun")
-    st.code(code_str, language="python")
-
-    # OPTIONAL: wenn du während der Session Komponenten patchst, kannst du hier reloaden.
-    # Standardmäßig lassen wir das aus (wie „normaler“ Streamlit-Code).
-    # import importlib
-    # for mod in ["blocks.components.gee.aoi_from_spec",
-    #             "blocks.components.gee.ndvi_acquire_process",
-    #             "blocks.components.visual.ndvi_timelapse_panel",
-    #             "blocks.components.util.scaffold"]:
-    #     if mod in sys.modules:
-    #         importlib.reload(sys.modules[mod])
-
-    try:
-        # >>> Self-Healing vor sichtbarer Ausführung
-        ok, final_code, heal_log = self_heal_until_runs(code_str, max_rounds=3)
-        if ok:
-            ns: dict[str, object] = {"__name__": "__generated__", "st": st, "ee": ee, "geemap": _sh_geemap, "Map": _sh_Map}
-            run_generated_code_visible(final_code, ns)  # sichtbare Exec mit echtem Streamlit
-            st.session_state["runner_results"]["inproc"] = {"ok": True}
-        else:
-            st.session_state["runner_results"]["inproc"] = {
-                "ok": False,
-                "error": "Automatische Reparatur fehlgeschlagen.",
-                "logs": heal_log,
-            }
-            with st.expander("Ergebnis / Logs", expanded=True):
-                st.json(st.session_state["runner_results"]["inproc"])
-    except Exception as e:
-        st.session_state["runner_results"]["inproc"] = {
-            "ok": False,
-            "error": str(e),
-            "traceback": traceback.format_exc(),
-        }
-        with st.expander("Ergebnis / Logs", expanded=True):
-            st.json(st.session_state["runner_results"]["inproc"])
-            st.error(st.session_state["runner_results"]["inproc"]["traceback"])
-# === Ende Runner-Panel ========================================================
-
-
-
-
+# === Debug: Code nur anzeigen, wenn explizit gewünscht ========================
+if st.session_state.get("show_code", False):
+    shown = st.session_state.get("healed_code") or st.session_state.get("last_code")
+    if shown:
+        st.write("---")
+        st.subheader("Code (Debug)")
+        st.code(shown, language="python")
